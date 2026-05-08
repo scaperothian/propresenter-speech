@@ -1,0 +1,30 @@
+[tool.poetry]
+name = "propresenter-speech"
+version = "0.1.0"
+description = "Voice-controlled slide advancement for ProPresenter using Whisper ASR"
+authors = ["scaperoth@berkeley.edu"]
+readme = "README.md"
+packages = [{include = "propresenter_speech", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+faster-whisper = "*"
+sounddevice = "*"
+numpy = "*"
+requests = "*"
+word2number = "*"
+propresenter-slides = {path = "../propresenter-slides", develop = true}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0"
+pytest-mock = "*"
+
+[tool.poetry.scripts]
+propresenter-speech = "propresenter_speech.main:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

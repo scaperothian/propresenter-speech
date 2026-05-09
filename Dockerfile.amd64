@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1
+#
+# AMD64 / x86_64 image. Identical to Dockerfile except for the platform target.
+#
+#   docker build \
+#     --platform linux/amd64 \
+#     -f propresenter-speech/Dockerfile.amd64 \
+#     -t propresenter-speech:amd64 \
+#     ..
+
+FROM --platform=linux/amd64 python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        portaudio19-dev \
+        libpulse0 \
+        libgomp1 \
+        gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir "poetry==1.8.3"
+
+WORKDIR /app
+COPY propresenter-slides/ propresenter-slides/
+COPY propresenter-speech/ propresenter-speech/
+
+WORKDIR /app/propresenter-speech
+
+ENV POETRY_VIRTUALENVS_CREATE=false \
+    POETRY_NO_INTERACTION=1
+
+RUN poetry install --only main
+
+VOLUME ["/root/.cache/huggingface"]
+
+ENTRYPOINT ["propresenter-speech"]

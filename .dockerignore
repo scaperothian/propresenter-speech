@@ -1,0 +1,33 @@
+# This file is copied to the parent directory by build-docker.sh before each
+# build so Docker respects it when the context is set to the parent of both repos.
+
+# Python caches
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+
+# Virtual environments
+**/.venv/
+**/venv/
+
+# Git history (large, not needed in image)
+**/.git/
+**/.gitignore
+
+# Docker files (no need to include them in the image)
+propresenter-speech/Dockerfile
+propresenter-speech/Dockerfile.amd64
+propresenter-speech/.dockerignore
+propresenter-speech/build-docker.sh
+
+# Test and dev artifacts
+**/tests/
+**/.coverage
+**/htmlcov/
+**/dist/
+**/build/
+**/*.egg-info/
+
+# macOS artifacts
+**/.DS_Store

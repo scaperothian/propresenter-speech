@@ -151,6 +151,101 @@ poetry run pytest tests/test_command_parser.py -v
 
 ---
 
+## Docker
+
+### Build
+
+The build context must be the **parent directory** of both repos because `propresenter-slides` is a path dependency:
+
+```bash
+cd propresenter-speech
+
+# ARM64 (Apple Silicon) — default
+./build-docker.sh
+
+# Custom tag
+./build-docker.sh propresenter-speech:v1
+
+# AMD64 / x86_64
+PLATFORM=linux/amd64 DOCKERFILE=Dockerfile.amd64 ./build-docker.sh propresenter-speech:amd64
+```
+
+Or invoke Docker directly:
+
+```bash
+# From the parent directory (one level up from propresenter-speech)
+docker build \
+  --platform linux/arm64 \
+  -f propresenter-speech/Dockerfile \
+  -t propresenter-speech:latest \
+  .
+```
+
+### Run
+
+ProPresenter runs on your Mac, not inside the container. Use `host.docker.internal` instead of `localhost`:
+
+```bash
+# Cache Whisper weights in a named volume so they survive container restarts
+docker run --rm \
+  -v whisper-models:/root/.cache/huggingface \
+  propresenter-speech:latest \
+  --host host.docker.internal
+
+# With verbose output and a smaller model
+docker run --rm \
+  -v whisper-models:/root/.cache/huggingface \
+  propresenter-speech:latest \
+  --host host.docker.internal --model small --verbose
+```
+
+### Microphone access on macOS Docker
+
+Docker Desktop on macOS runs inside a Linux VM that has **no direct access to the Mac's audio hardware**. To pass microphone audio into the container, route it through PulseAudio over TCP:
+
+**1. Install and start PulseAudio on your Mac:**
+
+```bash
+brew install pulseaudio
+
+# Start PulseAudio with a TCP listener (anonymous auth, localhost only)
+pulseaudio --load="module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1" \
+           --exit-idle-time=-1 \
+           --daemon
+```
+
+**2. Run the container with the PulseAudio server address:**
+
+```bash
+docker run --rm \
+  -v whisper-models:/root/.cache/huggingface \
+  -e PULSE_SERVER=host.docker.internal \
+  propresenter-speech:latest \
+  --host host.docker.internal
+```
+
+**3. Stop PulseAudio when done:**
+
+```bash
+pulseaudio --kill
+```
+
+> **Note:** If you find the PulseAudio setup cumbersome for day-to-day use on macOS, running natively (`poetry run propresenter-speech`) is simpler. Docker becomes more useful when deploying to a dedicated **Linux** host (e.g. a Mac Mini server or Raspberry Pi) where `--device /dev/snd` can be passed directly.
+
+### Linux deployment (no PulseAudio needed)
+
+On a Linux host, pass the ALSA sound device directly:
+
+```bash
+docker run --rm \
+  --device /dev/snd \
+  -v whisper-models:/root/.cache/huggingface \
+  propresenter-speech:latest \
+  --host <propresenter-ip>
+```
+
+---
+
 ## Tuning tips
 
 **Whisper triggers on background noise**  

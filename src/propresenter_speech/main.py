@@ -3,6 +3,8 @@ CLI entry point for propresenter-speech.
 
 Usage examples:
   propresenter-speech
+  propresenter-speech --mode follow
+  propresenter-speech --mode follow --trigger-words 2
   propresenter-speech --host 192.168.1.10 --port 1025 --model small --verbose
   propresenter-speech --list-devices
   propresenter-speech --device 2 --silence-threshold 0.02
@@ -16,6 +18,8 @@ from propresenter_slides.main import ProPresenterController
 
 from .audio_capture import AudioCapture, list_input_devices
 from .command_parser import CommandParser
+from .modes import Mode
+from .slide_follower import SlideFollower
 from .speech_controller import SpeechController
 from .transcriber import Transcriber
 
@@ -32,6 +36,26 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     conn.add_argument("--host", default="localhost", help="ProPresenter hostname or IP")
     conn.add_argument("--port", type=int, default=1025, help="ProPresenter API port")
     conn.add_argument("--timeout", type=int, default=5, help="HTTP request timeout (seconds)")
+
+    # Mode
+    mode_grp = parser.add_argument_group("Operation mode")
+    mode_grp.add_argument(
+        "--mode",
+        default="presentation",
+        choices=["presentation", "follow"],
+        help=(
+            "presentation: respond to explicit voice commands only. "
+            "follow: also auto-advance when the last word(s) of the active slide are heard."
+        ),
+    )
+    mode_grp.add_argument(
+        "--trigger-words",
+        type=int,
+        default=1,
+        dest="trigger_words",
+        metavar="N",
+        help="(follow mode) number of words from the end of the slide text to use as trigger (default: 1)",
+    )
 
     # Whisper
     whisper_grp = parser.add_argument_group("Whisper ASR")
@@ -103,6 +127,8 @@ def main() -> None:
                 print(f"  [{d['index']}] {d['name']}  ({d['channels']} ch)")
         sys.exit(0)
 
+    mode = Mode(args.mode)
+
     # Verify ProPresenter is reachable before loading the (large) Whisper model.
     pro = ProPresenterController(host=args.host, port=args.port, timeout=args.timeout)
     status = pro.get_status()
@@ -114,6 +140,8 @@ def main() -> None:
         sys.exit(1)
     print(f"Connected to ProPresenter at {args.host}:{args.port}")
 
+    slide_follower = SlideFollower(pro, trigger_word_count=args.trigger_words) if mode == Mode.FOLLOW else None
+
     controller = SpeechController(
         transcriber=Transcriber(model_name=args.model),
         command_parser=CommandParser(),
@@ -123,6 +151,8 @@ def main() -> None:
             silence_threshold=args.silence_threshold,
             silence_duration=args.silence_duration,
         ),
+        mode=mode,
+        slide_follower=slide_follower,
         verbose=args.verbose,
     )
     controller.run()

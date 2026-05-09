@@ -11,6 +11,7 @@ import pytest
 from unittest.mock import MagicMock, call, patch
 
 from propresenter_speech.command_parser import Command, CommandType
+from propresenter_speech.modes import Mode
 from propresenter_speech.speech_controller import SpeechController
 
 
@@ -187,3 +188,131 @@ class TestEnqueueSegment:
 
         # Queue should still be within its size limit
         assert ctrl._segment_queue.qsize() <= ctrl._segment_queue.maxsize
+
+
+# ---------------------------------------------------------------------------
+# Follow mode — _handle_follow
+# ---------------------------------------------------------------------------
+
+def _make_follow_controller(**kwargs) -> SpeechController:
+    follower = MagicMock()
+    follower.has_triggers = True
+    follower.trigger_words = ["grace"]
+    follower.matches.return_value = False
+    defaults = {
+        "transcriber": MagicMock(),
+        "command_parser": MagicMock(),
+        "pro_controller": MagicMock(),
+        "audio_capture": MagicMock(),
+        "mode": Mode.FOLLOW,
+        "slide_follower": follower,
+        "verbose": False,
+    }
+    defaults.update(kwargs)
+    return SpeechController(**defaults)
+
+
+class TestFollowMode:
+    def test_trigger_match_calls_next_slide(self):
+        ctrl = _make_follow_controller()
+        ctrl.slide_follower.matches.return_value = True
+        ctrl.pro_controller.next_slide.return_value = True
+        ctrl.command_parser.parse.return_value = Command(CommandType.UNKNOWN)
+        ctrl.transcriber.transcribe.return_value = "amazing grace"
+
+        ctrl._handle_segment(_audio())
+
+        ctrl.pro_controller.next_slide.assert_called_once()
+
+    def test_trigger_match_refreshes_follower(self):
+        ctrl = _make_follow_controller()
+        ctrl.slide_follower.matches.return_value = True
+        ctrl.pro_controller.next_slide.return_value = True
+        ctrl.command_parser.parse.return_value = Command(CommandType.UNKNOWN)
+        ctrl.transcriber.transcribe.return_value = "amazing grace"
+
+        ctrl._handle_segment(_audio())
+
+        ctrl.slide_follower.refresh.assert_called_once()
+
+    def test_no_trigger_match_does_not_advance(self):
+        ctrl = _make_follow_controller()
+        ctrl.slide_follower.matches.return_value = False
+        ctrl.command_parser.parse.return_value = Command(CommandType.UNKNOWN)
+        ctrl.transcriber.transcribe.return_value = "some random words"
+
+        ctrl._handle_segment(_audio())
+
+        ctrl.pro_controller.next_slide.assert_not_called()
+
+    def test_explicit_command_works_in_follow_mode(self):
+        ctrl = _make_follow_controller()
+        ctrl.command_parser.parse.return_value = Command(CommandType.NEXT_SLIDE)
+        ctrl.transcriber.transcribe.return_value = "next slide"
+        ctrl.pro_controller.next_slide.return_value = True
+
+        ctrl._handle_segment(_audio())
+
+        ctrl.pro_controller.next_slide.assert_called_once()
+
+    def test_explicit_command_refreshes_follower(self):
+        ctrl = _make_follow_controller()
+        ctrl.command_parser.parse.return_value = Command(CommandType.PREVIOUS_SLIDE)
+        ctrl.transcriber.transcribe.return_value = "previous slide"
+        ctrl.pro_controller.previous_slide.return_value = True
+
+        ctrl._handle_segment(_audio())
+
+        ctrl.slide_follower.refresh.assert_called_once()
+
+    def test_go_to_slide_command_works_in_follow_mode(self):
+        ctrl = _make_follow_controller()
+        ctrl.command_parser.parse.return_value = Command(CommandType.GO_TO_SLIDE, slide_number=3)
+        ctrl.transcriber.transcribe.return_value = "go to slide three"
+        ctrl.pro_controller.go_to_slide.return_value = True
+
+        ctrl._handle_segment(_audio())
+
+        ctrl.pro_controller.go_to_slide.assert_called_once_with(3)
+        ctrl.slide_follower.refresh.assert_called_once()
+
+    def test_trigger_match_prints_follow_indicator(self, capsys):
+        ctrl = _make_follow_controller()
+        ctrl.slide_follower.matches.return_value = True
+        ctrl.slide_follower.trigger_words = ["grace"]
+        ctrl.pro_controller.next_slide.return_value = True
+        ctrl.command_parser.parse.return_value = Command(CommandType.UNKNOWN)
+        ctrl.transcriber.transcribe.return_value = "grace"
+
+        ctrl._handle_segment(_audio())
+
+        out = capsys.readouterr().out
+        assert "follow" in out.lower()
+
+    def test_follow_mode_retries_refresh_when_no_triggers(self):
+        ctrl = _make_follow_controller()
+        ctrl.slide_follower.has_triggers = False
+        ctrl.slide_follower.matches.return_value = False
+        ctrl.command_parser.parse.return_value = Command(CommandType.UNKNOWN)
+        ctrl.transcriber.transcribe.return_value = "some words"
+
+        ctrl._handle_segment(_audio())
+
+        ctrl.slide_follower.refresh.assert_called_once()
+
+    def test_none_slide_follower_does_not_crash_in_follow_mode(self, capsys):
+        ctrl = _make_follow_controller(slide_follower=None)
+        ctrl.command_parser.parse.return_value = Command(CommandType.UNKNOWN)
+        ctrl.transcriber.transcribe.return_value = "some words"
+
+        ctrl._handle_segment(_audio())  # should not raise
+
+    def test_presentation_mode_ignores_trigger_words(self):
+        ctrl = _make_controller()
+        assert ctrl.mode == Mode.PRESENTATION
+        ctrl.command_parser.parse.return_value = Command(CommandType.UNKNOWN)
+        ctrl.transcriber.transcribe.return_value = "amazing grace"
+
+        ctrl._handle_segment(_audio())
+
+        ctrl.pro_controller.next_slide.assert_not_called()

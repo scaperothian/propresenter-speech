@@ -15,7 +15,9 @@ ProPresenter HTTP API to advance, retreat, or jump to a specific slide.
 | Whisper transcription | `src/propresenter_speech/transcriber.py` | lazy-loads via faster-whisper; no PyTorch; models from HuggingFace |
 | Command parsing | `src/propresenter_speech/command_parser.py` | pure Python, no I/O |
 | Audio capture / VAD | `src/propresenter_speech/audio_capture.py` | sounddevice + energy-based VAD |
-| Pipeline orchestration | `src/propresenter_speech/speech_controller.py` | wires the three above together |
+| Mode enum | `src/propresenter_speech/modes.py` | `Mode.PRESENTATION` / `Mode.FOLLOW` |
+| Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text, extracts trigger words |
+| Pipeline orchestration | `src/propresenter_speech/speech_controller.py` | mode-aware dispatch; wires all components |
 | CLI entry point | `src/propresenter_speech/main.py` | argparse, calls `SpeechController.run()` |
 | ProPresenter HTTP client | `../propresenter-slides/src/propresenter_slides/main.py` | imported via path dependency |
 
@@ -33,11 +35,13 @@ ProPresenter HTTP API to advance, retreat, or jump to a specific slide.
 poetry install
 
 # Verify ProPresenter is running locally on port 1025, then:
-poetry run propresenter-speech
+poetry run propresenter-speech                          # presentation mode (default)
+poetry run propresenter-speech --mode follow            # follow mode
+poetry run propresenter-speech --mode follow --trigger-words 2  # use last 2 words as trigger
 
 # Common flags
 poetry run propresenter-speech --model small         # better accuracy
-poetry run propresenter-speech --verbose             # print transcriptions
+poetry run propresenter-speech --verbose             # print transcriptions + trigger words
 poetry run propresenter-speech --list-devices        # show audio input devices
 poetry run propresenter-speech --device 2            # use device index 2
 poetry run propresenter-speech --host 192.168.1.5    # remote ProPresenter host
@@ -64,6 +68,31 @@ because the import is deferred inside `Transcriber.load()`).
 3. Add unit tests in `tests/test_command_parser.py` and
    `tests/test_speech_controller.py`.
 
+## Adding new modes
+
+1. Add a new value to the `Mode` enum in `modes.py`.
+2. Add the mode choice to `--mode` in `main.py` and wire up any new
+   dependencies (e.g. a new controller class analogous to `SlideFollower`).
+3. Branch on the new `Mode` value in `SpeechController._handle_segment()`.
+4. Add tests in `test_speech_controller.py`.
+
+## Follow mode — how it works
+
+1. On startup `SlideFollower.refresh()` fetches the active presentation from
+   `v1/presentation/active` (fallback: `v1/status/slide`) and recursively
+   scans the response for text fields.
+2. The last N words (default 1, configurable via `--trigger-words`) are stored
+   as trigger words after stripping RTF/HTML markup.
+3. Each transcribed segment is checked against both the `CommandParser` **and**
+   `SlideFollower.matches()`.  An explicit command always takes priority.
+4. On a trigger match or explicit command that changes the slide,
+   `SlideFollower.refresh()` is called to load the trigger words for the
+   new slide.
+
+Note: slide text availability depends on what the ProPresenter Network API
+returns for the active presentation.  If text cannot be retrieved, the follower
+logs a warning and only explicit commands work until the next successful refresh.
+
 ## Audio tuning
 
 If Whisper is triggering on background noise:
@@ -80,3 +109,10 @@ If commands are being cut off mid-utterance:
 - **Web-based Whisper** — swap `Transcriber` backend to a hosted API if on-device
   latency is too high.
 - **Presentation name commands** — "open sermon slides", "switch to announcements".
+
+## Modes summary
+
+| `--mode` | Behaviour |
+|----------|-----------|
+| `presentation` (default) | Responds to explicit voice commands only |
+| `follow` | Auto-advances on slide trigger words **and** accepts all explicit commands |

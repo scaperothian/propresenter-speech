@@ -10,6 +10,7 @@ packages = [{include = "propresenter_speech", from = "src"}]
 python = "^3.10"
 faster-whisper = "*"
 sounddevice = "*"
+soundfile = "*"
 numpy = "*"
 requests = "*"
 word2number = "*"

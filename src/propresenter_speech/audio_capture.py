@@ -168,9 +168,126 @@ class AudioCapture:
                     in_speech = False
 
 
+class AudioFileCapture:
+    """
+    Drop-in replacement for AudioCapture that reads from an audio file.
+
+    Applies the same energy-based VAD as AudioCapture and emits speech
+    segments via the same callback interface.  The processing thread exits
+    naturally when the file ends; the program then idles until the user
+    presses 'q' + Enter or Ctrl-C.
+    """
+
+    def __init__(
+        self,
+        file_path: str,
+        silence_threshold: float = DEFAULT_SILENCE_THRESHOLD,
+        silence_duration: float = DEFAULT_SILENCE_DURATION,
+        min_speech_duration: float = DEFAULT_MIN_SPEECH_DURATION,
+        max_speech_duration: float = DEFAULT_MAX_SPEECH_DURATION,
+    ):
+        self._file_path = file_path
+        self.silence_threshold = silence_threshold
+        self.silence_duration = silence_duration
+        self.min_speech_duration = min_speech_duration
+        self.max_speech_duration = max_speech_duration
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self, on_segment: Callable[[np.ndarray], None]) -> None:
+        """Load the audio file and start VAD processing in a background thread."""
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._process_file,
+            args=(on_segment,),
+            daemon=True,
+            name="audio-file",
+        )
+        self._thread.start()
+        logger.info("Audio file capture started: %s", self._file_path)
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        logger.info("Audio file capture stopped.")
+
+    def _process_file(self, on_segment: Callable[[np.ndarray], None]) -> None:
+        import soundfile as sf
+
+        try:
+            audio, sample_rate = sf.read(self._file_path, dtype="float32", always_2d=False)
+        except Exception as exc:
+            logger.error("Failed to load audio file '%s': %s", self._file_path, exc)
+            return
+
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+
+        if sample_rate != SAMPLE_RATE:
+            logger.info("Resampling audio from %d Hz to %d Hz", sample_rate, SAMPLE_RATE)
+            audio = _resample(audio, sample_rate, SAMPLE_RATE)
+
+        silence_frames_needed = int(self.silence_duration / CHUNK_SECONDS)
+        max_speech_frames = int(self.max_speech_duration / CHUNK_SECONDS)
+        min_speech_frames = int(self.min_speech_duration / CHUNK_SECONDS)
+
+        speech_chunks: list[np.ndarray] = []
+        silence_frame_count = 0
+        in_speech = False
+
+        for start in range(0, len(audio), CHUNK_FRAMES):
+            if not self._running:
+                break
+            chunk = audio[start:start + CHUNK_FRAMES]
+            if len(chunk) == 0:
+                continue
+
+            rms = float(np.sqrt(np.mean(chunk ** 2)))
+            is_voice = rms >= self.silence_threshold
+
+            if is_voice:
+                if not in_speech:
+                    in_speech = True
+                    logger.debug("Speech start detected (rms=%.4f)", rms)
+                silence_frame_count = 0
+                speech_chunks.append(chunk)
+            elif in_speech:
+                silence_frame_count += 1
+                speech_chunks.append(chunk)
+
+                if silence_frame_count >= silence_frames_needed or len(speech_chunks) >= max_speech_frames:
+                    if len(speech_chunks) >= min_speech_frames:
+                        segment = np.concatenate(speech_chunks)
+                        logger.debug("Emitting speech segment (%.2f s)", len(segment) / SAMPLE_RATE)
+                        on_segment(segment)
+                    speech_chunks = []
+                    silence_frame_count = 0
+                    in_speech = False
+
+        # Flush any speech remaining at end of file
+        if speech_chunks and len(speech_chunks) >= min_speech_frames:
+            segment = np.concatenate(speech_chunks)
+            logger.debug("Emitting final segment (%.2f s)", len(segment) / SAMPLE_RATE)
+            on_segment(segment)
+
+        logger.info("Audio file processing complete.")
+        print("\nFile processing complete. Press 'q' + Enter to stop.")
+
+
 # ------------------------------------------------------------------
 # Utility
 # ------------------------------------------------------------------
+
+def _resample(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+    """Linear-interpolation resample — adequate quality for 16 kHz voice."""
+    n_samples = int(len(audio) * target_sr / orig_sr)
+    return np.interp(
+        np.linspace(0, len(audio) - 1, n_samples),
+        np.arange(len(audio)),
+        audio,
+    ).astype(np.float32)
+
 
 def list_input_devices() -> list[dict]:
     """Return a list of available input audio devices."""

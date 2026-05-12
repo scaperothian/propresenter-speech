@@ -116,37 +116,46 @@ class TestExtractTextFromResponse:
 # SlideFollower.refresh
 # ---------------------------------------------------------------------------
 
+def _mock_slide_text(mock_pro, text: str, slide_index: int = 0) -> None:
+    """Configure mock_pro to return a presentation with a single slide containing text."""
+    slides = [{"text": text}]
+    mock_pro.get_active_presentation_uuid.return_value = "test-uuid"
+    mock_pro.get_presentation_details.return_value = {"slides": slides}
+    mock_pro.find_slides.return_value = slides
+    mock_pro.get_slide_index.return_value = slide_index
+
+
 class TestSlideFollowerRefresh:
     def test_refresh_returns_true_on_success(self, follower, mock_pro):
-        mock_pro.get_active_presentation.return_value = {"text": "Amazing grace"}
+        _mock_slide_text(mock_pro, "Amazing grace")
         assert follower.refresh() is True
 
     def test_refresh_sets_trigger_words(self, follower, mock_pro):
-        mock_pro.get_active_presentation.return_value = {"text": "Amazing grace"}
+        _mock_slide_text(mock_pro, "Amazing grace")
         follower.refresh()
         assert follower.trigger_words == ["grace"]
 
     def test_refresh_uses_last_n_words(self, mock_pro):
         f = SlideFollower(mock_pro, trigger_word_count=2)
-        mock_pro.get_active_presentation.return_value = {"text": "Amazing grace how sweet"}
+        _mock_slide_text(mock_pro, "Amazing grace how sweet")
         f.refresh()
         assert f.trigger_words == ["how", "sweet"]
 
     def test_refresh_falls_back_to_status(self, follower, mock_pro):
-        mock_pro.get_active_presentation.return_value = None
+        mock_pro.get_active_presentation_uuid.return_value = None
         mock_pro.get_status.return_value = {"text": "Fallback text"}
         assert follower.refresh() is True
         assert follower.trigger_words == ["text"]
 
     def test_refresh_returns_false_when_no_text(self, follower, mock_pro):
-        mock_pro.get_active_presentation.return_value = None
+        mock_pro.get_active_presentation_uuid.return_value = None
         mock_pro.get_status.return_value = None
         assert follower.refresh() is False
 
     def test_refresh_clears_triggers_when_no_text(self, follower, mock_pro):
-        mock_pro.get_active_presentation.return_value = {"text": "first slide"}
+        _mock_slide_text(mock_pro, "first slide")
         follower.refresh()
-        mock_pro.get_active_presentation.return_value = None
+        mock_pro.get_active_presentation_uuid.return_value = None
         mock_pro.get_status.return_value = None
         follower.refresh()
         assert follower.trigger_words == []
@@ -155,7 +164,7 @@ class TestSlideFollowerRefresh:
         assert not follower.has_triggers
 
     def test_has_triggers_true_after_successful_refresh(self, follower, mock_pro):
-        mock_pro.get_active_presentation.return_value = {"text": "some text"}
+        _mock_slide_text(mock_pro, "some text")
         follower.refresh()
         assert follower.has_triggers
 
@@ -166,12 +175,12 @@ class TestSlideFollowerRefresh:
 
 class TestSlideFollowerMatches:
     def test_matches_when_trigger_word_present(self, follower, mock_pro):
-        mock_pro.get_active_presentation.return_value = {"text": "Amazing grace"}
+        _mock_slide_text(mock_pro, "Amazing grace")
         follower.refresh()
         assert follower.matches("I said amazing grace how sweet")
 
     def test_no_match_when_trigger_absent(self, follower, mock_pro):
-        mock_pro.get_active_presentation.return_value = {"text": "Amazing grace"}
+        _mock_slide_text(mock_pro, "Amazing grace")
         follower.refresh()
         assert not follower.matches("something completely different")
 
@@ -179,18 +188,18 @@ class TestSlideFollowerMatches:
         assert not follower.matches("any text at all")
 
     def test_matching_is_case_insensitive(self, follower, mock_pro):
-        mock_pro.get_active_presentation.return_value = {"text": "Amazing Grace"}
+        _mock_slide_text(mock_pro, "Amazing Grace")
         follower.refresh()
         assert follower.matches("I said GRACE")
 
     def test_all_trigger_words_must_match(self, mock_pro):
         f = SlideFollower(mock_pro, trigger_word_count=2)
-        mock_pro.get_active_presentation.return_value = {"text": "how sweet the sound"}
+        _mock_slide_text(mock_pro, "how sweet the sound")
         f.refresh()
-        assert f.matches("the sound")         # both words present
-        assert not f.matches("the noise")     # only "the" present, not "sound"
+        assert f.matches("the sound")
+        assert not f.matches("the noise")
 
     def test_empty_transcript(self, follower, mock_pro):
-        mock_pro.get_active_presentation.return_value = {"text": "Amazing grace"}
+        _mock_slide_text(mock_pro, "Amazing grace")
         follower.refresh()
         assert not follower.matches("")

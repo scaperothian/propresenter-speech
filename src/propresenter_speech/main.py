@@ -3,7 +3,8 @@ CLI entry point for propresenter-speech.
 
 Usage examples:
   propresenter-speech
-  propresenter-speech --mode follow
+  propresenter-speech --presentation "Sermon Slides"
+  propresenter-speech --presentation "Worship" --library Songs --mode follow
   propresenter-speech --mode follow --trigger-words 2
   propresenter-speech --host 192.168.1.10 --port 1025 --model small --verbose
   propresenter-speech --list-devices
@@ -13,10 +14,11 @@ Usage examples:
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 from propresenter_slides.main import ProPresenterController
 
-from .audio_capture import AudioCapture, list_input_devices
+from .audio_capture import AudioCapture, AudioFileCapture, list_input_devices
 from .command_parser import CommandParser
 from .modes import Mode
 from .slide_follower import SlideFollower
@@ -36,6 +38,21 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     conn.add_argument("--host", default="localhost", help="ProPresenter hostname or IP")
     conn.add_argument("--port", type=int, default=1025, help="ProPresenter API port")
     conn.add_argument("--timeout", type=int, default=5, help="HTTP request timeout (seconds)")
+
+    # Presentation selection
+    pres_grp = parser.add_argument_group("Presentation selection")
+    pres_grp.add_argument(
+        "--presentation",
+        default=None,
+        metavar="NAME",
+        help="Activate a presentation by name before listening (case-insensitive substring match)",
+    )
+    pres_grp.add_argument(
+        "--library",
+        default="Default",
+        metavar="NAME",
+        help="Library to search when --presentation is given",
+    )
 
     # Mode
     mode_grp = parser.add_argument_group("Operation mode")
@@ -94,6 +111,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         dest="list_devices",
         help="Print available input audio devices and exit",
     )
+    audio_grp.add_argument(
+        "--audio-file",
+        default=None,
+        metavar="PATH",
+        dest="audio_file",
+        help="Process an audio file instead of the microphone (WAV/FLAC/OGG; resampled to 16 kHz automatically)",
+    )
 
     # Misc
     parser.add_argument("--verbose", action="store_true", help="Print transcribed text to stdout")
@@ -109,6 +133,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    sys.stdout.reconfigure(line_buffering=True)
     parser = _build_arg_parser()
     args = parser.parse_args()
 
@@ -116,6 +141,10 @@ def main() -> None:
         level=getattr(logging, args.log_level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
+    if args.audio_file and not Path(args.audio_file).is_file():
+        print(f"Error: Audio file not found: {args.audio_file}")
+        sys.exit(1)
 
     if args.list_devices:
         devices = list_input_devices()
@@ -140,17 +169,40 @@ def main() -> None:
         sys.exit(1)
     print(f"Connected to ProPresenter at {args.host}:{args.port}")
 
+    if args.presentation:
+        library_data = pro.get_library(args.library)
+        if library_data is None:
+            print(f"Error: Could not query '{args.library}' library at {args.host}:{args.port}.")
+            sys.exit(1)
+        uuid = pro.find_presentation_uuid_by_name(args.presentation, library_data)
+        if uuid is None:
+            print(f"Error: Presentation '{args.presentation}' not found in '{args.library}' library.")
+            sys.exit(1)
+        if not pro.activate_presentation(uuid):
+            print(f"Error: Failed to activate '{args.presentation}'.")
+            sys.exit(1)
+        print(f"Activated '{args.presentation}'.")
+
     slide_follower = SlideFollower(pro, trigger_word_count=args.trigger_words) if mode == Mode.FOLLOW else None
+
+    if args.audio_file:
+        audio_source = AudioFileCapture(
+            file_path=args.audio_file,
+            silence_threshold=args.silence_threshold,
+            silence_duration=args.silence_duration,
+        )
+    else:
+        audio_source = AudioCapture(
+            device=args.device,
+            silence_threshold=args.silence_threshold,
+            silence_duration=args.silence_duration,
+        )
 
     controller = SpeechController(
         transcriber=Transcriber(model_name=args.model),
         command_parser=CommandParser(),
         pro_controller=pro,
-        audio_capture=AudioCapture(
-            device=args.device,
-            silence_threshold=args.silence_threshold,
-            silence_duration=args.silence_duration,
-        ),
+        audio_capture=audio_source,
         mode=mode,
         slide_follower=slide_follower,
         verbose=args.verbose,

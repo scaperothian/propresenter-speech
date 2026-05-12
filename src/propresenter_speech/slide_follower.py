@@ -1,20 +1,21 @@
 """
 Follow-mode slide tracking.
 
-Fetches the text of the currently active ProPresenter slide, extracts the
-last N words as trigger words, then detects when the speaker has reached
-that point in their text so the next slide can be cued automatically.
+Fetches the text of the current slide from the ProPresenter HTTP API and
+extracts the last N words as trigger words so the controller can auto-advance
+when the speaker reaches them.
 
-ProPresenter API notes:
-- v1/presentation/active  — returns presentation metadata and may contain
-  nested slide text in various shapes depending on PP7 version.
-- v1/status/slide         — returns current slide position; sometimes
-  includes text fields depending on how PP is configured.
+Slide-text retrieval flow (per refresh):
+1. get_active_presentation_uuid()  — resolves the UUID of the active presentation.
+2. get_presentation_details(uuid)  — fetches full details; result is cached for the
+   lifetime of the class and re-fetched only when the UUID changes (new presentation).
+3. get_slide_index()               — returns the zero-based index of the current slide
+   via GET /v1/presentation/slide_index?chunked=false.
+4. find_slides(details)[index]["text"]  — reads the exact slide text directly.
 
-Because the exact response shape varies across ProPresenter versions, text
-extraction walks the response recursively looking for known field names.
-If slide text cannot be retrieved the follower degrades gracefully: follow
-mode keeps listening for explicit commands while warning the user.
+Falls back to GET /v1/status/slide + recursive text search when any step above fails.
+
+API reference: http://<propresenter-ip>:1025/v1/doc/index.html#
 """
 
 import logging
@@ -54,6 +55,9 @@ class SlideFollower:
         self._controller = pro_controller
         self._trigger_word_count = trigger_word_count
         self._trigger_words: list[str] = []
+        self._presentation_uuid: str | None = None
+        self._presentation_details: dict | None = None
+        self._slide_index: int | None = None
 
     @property
     def trigger_words(self) -> list[str]:
@@ -101,20 +105,122 @@ class SlideFollower:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def validate(self) -> tuple[bool, str]:
+        """
+        Confirm that presentation details are fetchable with slides containing text.
+
+        Caches the UUID and details so the first refresh() call reuses them.
+        Returns (True, "") on success, or (False, reason) on failure.
+        """
+        uuid = self._controller.get_active_presentation_uuid()
+        if not uuid:
+            return False, "Could not retrieve active presentation UUID from ProPresenter."
+
+        details = self._controller.get_presentation_details(uuid)
+        if not details:
+            return False, f"Could not retrieve presentation details for UUID {uuid}."
+
+        slides = self._controller.find_slides(details)
+        if not slides:
+            return False, "Presentation details contain no slides."
+
+        if not any("text" in slide for slide in slides if isinstance(slide, dict)):
+            return False, "No slides in the presentation contain a 'text' field."
+
+        self._presentation_uuid = uuid
+        self._presentation_details = details
+        return True, ""
+
     def _fetch_slide_text(self) -> str:
-        """Try multiple ProPresenter endpoints to retrieve current slide text."""
-        data = self._controller.get_active_presentation()
-        if data:
-            text = extract_text_from_response(data)
+        """
+        Return the text of the currently active slide.
+
+        Keeps presentation details cached; only re-fetches when the active
+        presentation UUID changes.  Falls back to status endpoint on any failure.
+        """
+        uuid = self._controller.get_active_presentation_uuid()
+        logger.debug("Active UUID: %s", uuid)
+        if not uuid:
+            logger.debug("No active UUID — falling back to status endpoint")
+            return self._status_fallback()
+
+        if uuid != self._presentation_uuid or self._presentation_details is None:
+            logger.debug("UUID changed or no cached details — fetching presentation %s", uuid)
+            details = self._controller.get_presentation_details(uuid)
+            if not details:
+                logger.debug("get_presentation_details returned nothing — falling back to status endpoint")
+                return self._status_fallback()
+            self._presentation_uuid = uuid
+            self._presentation_details = details
+
+        slide_index = self._controller.get_slide_index()
+        logger.debug("Slide index: %s", slide_index)
+        if slide_index is None:
+            logger.debug("get_slide_index returned None — falling back to status endpoint")
+            return self._status_fallback()
+
+        self._slide_index = slide_index
+        slides = self._controller.find_slides(self._presentation_details)
+        logger.debug("Slides found: %d, using index: %d", len(slides), slide_index)
+        if slide_index < len(slides):
+            text = self._text_at_index(slide_index)
             if text:
                 return text
+            logger.debug("Slide text empty or non-string — falling back to status endpoint")
+        else:
+            logger.debug("Slide index %d out of range (slides: %d) — falling back to status endpoint", slide_index, len(slides))
 
+        return self._status_fallback()
+
+    def _text_at_index(self, index: int) -> str:
+        if self._presentation_details is None:
+            return ""
+        slides = self._controller.find_slides(self._presentation_details)
+        if index < 0 or index >= len(slides):
+            return ""
+        slide = slides[index]
+        text = slide.get("text", "") if isinstance(slide, dict) else ""
+        logger.debug("Slide text at %d (type=%s): %r", index, type(text).__name__, str(text)[:80])
+        return text.strip() if isinstance(text, str) else ""
+
+    def refresh_after_advance(self, delta: int = 1) -> bool:
+        """
+        Update trigger words for the slide *delta* positions ahead of the cached index.
+
+        Avoids calling ``get_slide_index()`` again (which may still return the
+        pre-advance value due to API propagation delay).  Falls back to a full
+        ``refresh()`` when no cached index is available.
+
+        Returns True if trigger words were updated, False when the end of the
+        presentation has been reached (trigger words are cleared).
+        """
+        if self._slide_index is None or self._presentation_details is None:
+            return self.refresh()
+
+        next_index = self._slide_index + delta
+        slides = self._controller.find_slides(self._presentation_details)
+        if next_index >= len(slides):
+            self._trigger_words = []
+            logger.info("End of presentation reached — no more trigger words.")
+            return False
+
+        text = self._text_at_index(next_index)
+        if not text:
+            return self.refresh()
+
+        words = extract_words(text)
+        if not words:
+            return self.refresh()
+
+        self._slide_index = next_index
+        self._trigger_words = words[-self._trigger_word_count:]
+        logger.info("Trigger words updated: %s", self._trigger_words)
+        return True
+
+    def _status_fallback(self) -> str:
         status = self._controller.get_status()
         if status:
-            text = extract_text_from_response(status)
-            if text:
-                return text
-
+            return extract_text_from_response(status)
         return ""
 
 

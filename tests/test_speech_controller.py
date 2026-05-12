@@ -199,6 +199,8 @@ def _make_follow_controller(**kwargs) -> SpeechController:
     follower.has_triggers = True
     follower.trigger_words = ["grace"]
     follower.matches.return_value = False
+    # Returning False from refresh_after_advance breaks the follow loop after one advance.
+    follower.refresh_after_advance.return_value = False
     defaults = {
         "transcriber": MagicMock(),
         "command_parser": MagicMock(),
@@ -224,7 +226,7 @@ class TestFollowMode:
 
         ctrl.pro_controller.next_slide.assert_called_once()
 
-    def test_trigger_match_refreshes_follower(self):
+    def test_trigger_match_calls_refresh_after_advance(self):
         ctrl = _make_follow_controller()
         ctrl.slide_follower.matches.return_value = True
         ctrl.pro_controller.next_slide.return_value = True
@@ -233,7 +235,7 @@ class TestFollowMode:
 
         ctrl._handle_segment(_audio())
 
-        ctrl.slide_follower.refresh.assert_called_once()
+        ctrl.slide_follower.refresh_after_advance.assert_called_once()
 
     def test_no_trigger_match_does_not_advance(self):
         ctrl = _make_follow_controller()

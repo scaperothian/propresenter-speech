@@ -20,6 +20,8 @@ Flow:
 
 import logging
 import queue
+import sys
+import threading
 from typing import Optional
 
 import numpy as np
@@ -83,7 +85,7 @@ class SpeechController:
     # ------------------------------------------------------------------
 
     def run(self) -> None:
-        """Load Whisper, start the microphone, and process commands until Ctrl-C."""
+        """Load Whisper, start the microphone, and process commands until stopped."""
         print("Loading Whisper model — this may take a moment on first run…")
         self.transcriber.load()
         print("Whisper ready.")
@@ -93,19 +95,37 @@ class SpeechController:
 
         self.audio_capture.start(self._enqueue_segment)
         self._print_listening_banner()
-        print("Press Ctrl-C to stop.\n")
+        print("Press 'q' + Enter or Ctrl-C to stop.\n")
+
+        stop = threading.Event()
+        threading.Thread(
+            target=self._keyboard_listener,
+            args=(stop,),
+            daemon=True,
+        ).start()
 
         try:
-            while True:
+            while not stop.is_set():
                 try:
                     segment = self._segment_queue.get(timeout=0.5)
                     self._handle_segment(segment)
                 except queue.Empty:
                     continue
         except KeyboardInterrupt:
-            print("\nStopping…")
+            pass
         finally:
+            print("\nStopping…")
             self.audio_capture.stop()
+
+    @staticmethod
+    def _keyboard_listener(stop: threading.Event) -> None:
+        """Set *stop* when the user types 'q' and presses Enter."""
+        while not stop.is_set():
+            try:
+                if input().strip().lower() == "q":
+                    stop.set()
+            except EOFError:
+                break
 
     # ------------------------------------------------------------------
     # Internal
@@ -113,21 +133,32 @@ class SpeechController:
 
     def _init_follow_mode(self) -> None:
         if self.slide_follower is None:
-            logger.warning("Follow mode requested but no SlideFollower provided; falling back to presentation mode.")
+            logger.warning(
+                "Follow mode requested but no SlideFollower provided; "
+                "falling back to presentation mode."
+            )
             self.mode = Mode.PRESENTATION
             return
-        ok = self.slide_follower.refresh()
-        if ok:
-            print(f"Follow mode active. Listening for: {self.slide_follower.trigger_words}")
-        else:
-            print("Follow mode active. (Could not read slide text — will retry on each transcription.)")
+
+        ok, reason = self.slide_follower.validate()
+        if not ok:
+            print(f"Error: Cannot start follow mode — {reason}")
+            sys.exit(1)
+
+        self.slide_follower.refresh()
+        print(f"Follow mode active. Listening for: {self.slide_follower.trigger_words}")
 
     def _print_listening_banner(self) -> None:
         if self.mode == Mode.FOLLOW:
             print("Listening in follow mode. Slide advances automatically on trigger words.")
-            print("Explicit commands ('next slide', 'previous slide', 'go to slide N') also work.")
+            print(
+                "Explicit commands ('next slide', 'previous slide', 'go to slide N') also work."
+            )
         else:
-            print("Listening for voice commands. Say 'next slide', 'previous slide', or 'go to slide N'.")  # noqa: E501
+            print(
+                "Listening for voice commands. "
+                "Say 'next slide', 'previous slide', or 'go to slide N'."
+            )
 
     def _enqueue_segment(self, audio: np.ndarray) -> None:
         try:
@@ -166,15 +197,17 @@ class SpeechController:
         if not self.slide_follower.has_triggers:
             self.slide_follower.refresh()
 
-        if self.slide_follower.matches(text):
+        while self.slide_follower.has_triggers and self.slide_follower.matches(text):
+            triggered_on = self.slide_follower.trigger_words
             ok = self.pro_controller.next_slide()
-            if ok:
-                print(f"→ Next slide (follow: {self.slide_follower.trigger_words})")
-                self.slide_follower.refresh()
-                if self.slide_follower.has_triggers and self.verbose:
-                    print(f"  trigger words: {self.slide_follower.trigger_words}")
-            else:
+            if not ok:
                 print("✗ Failed: next slide (follow)")
+                break
+            print(f"→ Next slide (follow: {triggered_on})")
+            if not self.slide_follower.refresh_after_advance():
+                break
+            if self.slide_follower.has_triggers and self.verbose:
+                print(f"  trigger words: {self.slide_follower.trigger_words}")
 
     def _execute(self, command: Command, raw_text: str) -> None:
         if command.type == CommandType.NEXT_SLIDE:

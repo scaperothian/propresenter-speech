@@ -8,11 +8,21 @@ Flow:
        │                                                    │
        └───────────────────────────────────────► CommandParser
                                                             │
+                                      (mode-dependent dispatch)
+                                         ┌──────────────────┴──────────────────┐
+                                presentation mode                          follow mode
+                               explicit commands only           trigger words + explicit commands
+                                                                            │
+                                                                      SlideFollower
+                                                            │
                                                ProPresenterController
 """
 
 import logging
 import queue
+import sys
+import threading
+from typing import Optional
 
 import numpy as np
 
@@ -20,18 +30,23 @@ from propresenter_slides.main import ProPresenterController
 
 from .audio_capture import AudioCapture
 from .command_parser import Command, CommandParser, CommandType
+from .modes import Mode
+from .slide_follower import SlideFollower
 from .transcriber import Transcriber
 
 logger = logging.getLogger(__name__)
 
-# Drop incoming segments if the processing queue is already full to maintain
-# real-time responsiveness (we prefer the latest utterance over a stale one).
 _SEGMENT_QUEUE_SIZE = 2
 
 
 class SpeechController:
     """
     Wires together audio capture, transcription, command parsing, and slide control.
+
+    In ``presentation`` mode (default) only explicit voice commands are acted on.
+    In ``follow`` mode the controller also watches for the last word(s) of the
+    active slide and auto-advances when they are heard, while still accepting all
+    explicit commands.
 
     Typical usage::
 
@@ -40,6 +55,8 @@ class SpeechController:
             command_parser=CommandParser(),
             pro_controller=ProPresenterController(),
             audio_capture=AudioCapture(),
+            mode=Mode.FOLLOW,
+            slide_follower=SlideFollower(pro_controller),
         )
         controller.run()  # blocks until Ctrl-C
     """
@@ -50,12 +67,16 @@ class SpeechController:
         command_parser: CommandParser,
         pro_controller: ProPresenterController,
         audio_capture: AudioCapture,
+        mode: Mode = Mode.PRESENTATION,
+        slide_follower: Optional[SlideFollower] = None,
         verbose: bool = False,
     ):
         self.transcriber = transcriber
         self.command_parser = command_parser
         self.pro_controller = pro_controller
         self.audio_capture = audio_capture
+        self.mode = mode
+        self.slide_follower = slide_follower
         self.verbose = verbose
         self._segment_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=_SEGMENT_QUEUE_SIZE)
 
@@ -64,30 +85,80 @@ class SpeechController:
     # ------------------------------------------------------------------
 
     def run(self) -> None:
-        """Load Whisper, start the microphone, and process commands until Ctrl-C."""
+        """Load Whisper, start the microphone, and process commands until stopped."""
         print("Loading Whisper model — this may take a moment on first run…")
         self.transcriber.load()
         print("Whisper ready.")
 
+        if self.mode == Mode.FOLLOW:
+            self._init_follow_mode()
+
         self.audio_capture.start(self._enqueue_segment)
-        print("Listening for voice commands. Say 'next slide', 'previous slide', or 'go to slide N'.")  # noqa: E501
-        print("Press Ctrl-C to stop.\n")
+        self._print_listening_banner()
+        print("Press 'q' + Enter or Ctrl-C to stop.\n")
+
+        stop = threading.Event()
+        threading.Thread(
+            target=self._keyboard_listener,
+            args=(stop,),
+            daemon=True,
+        ).start()
 
         try:
-            while True:
+            while not stop.is_set():
                 try:
                     segment = self._segment_queue.get(timeout=0.5)
                     self._handle_segment(segment)
                 except queue.Empty:
                     continue
         except KeyboardInterrupt:
-            print("\nStopping…")
+            pass
         finally:
+            print("\nStopping…")
             self.audio_capture.stop()
+
+    @staticmethod
+    def _keyboard_listener(stop: threading.Event) -> None:
+        """Set *stop* when the user types 'q' and presses Enter."""
+        while not stop.is_set():
+            try:
+                if input().strip().lower() == "q":
+                    stop.set()
+            except EOFError:
+                break
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _init_follow_mode(self) -> None:
+        if self.slide_follower is None:
+            logger.warning(
+                "Follow mode requested but no SlideFollower provided; "
+                "falling back to presentation mode."
+            )
+            self.mode = Mode.PRESENTATION
+            return
+
+        ok, reason = self.slide_follower.validate()
+        if not ok:
+            print(f"Error: Cannot start follow mode — {reason}")
+            sys.exit(1)
+
+        self.slide_follower.refresh()
+        print(f"Follow mode active. Listening for: {self.slide_follower.trigger_words}")
+
+    def _print_listening_banner(self) -> None:
+        if self.mode == Mode.FOLLOW:
+            print("Listening in follow mode. Slide advances automatically on trigger words.")
+            print(
+                "Explicit commands ('next slide', 'previous slide', 'go to slide N') also work."
+            )
+        else:
+            print(
+                "Listening for voice commands. "
+                "Say 'next slide', 'previous slide', or 'go to slide N'."
+            )
 
     def _enqueue_segment(self, audio: np.ndarray) -> None:
         try:
@@ -109,7 +180,34 @@ class SpeechController:
             print(f"  heard: {text!r}")
 
         command = self.command_parser.parse(text)
-        self._execute(command, text)
+
+        if command.type != CommandType.UNKNOWN:
+            self._execute(command, text)
+            if self.mode == Mode.FOLLOW and self.slide_follower:
+                self.slide_follower.refresh()
+                if self.slide_follower.has_triggers and self.verbose:
+                    print(f"  trigger words: {self.slide_follower.trigger_words}")
+        elif self.mode == Mode.FOLLOW:
+            self._handle_follow(text)
+
+    def _handle_follow(self, text: str) -> None:
+        if self.slide_follower is None:
+            return
+
+        if not self.slide_follower.has_triggers:
+            self.slide_follower.refresh()
+
+        while self.slide_follower.has_triggers and self.slide_follower.matches(text):
+            triggered_on = self.slide_follower.trigger_words
+            ok = self.pro_controller.next_slide()
+            if not ok:
+                print("✗ Failed: next slide (follow)")
+                break
+            print(f"→ Next slide (follow: {triggered_on})")
+            if not self.slide_follower.refresh_after_advance():
+                break
+            if self.slide_follower.has_triggers and self.verbose:
+                print(f"  trigger words: {self.slide_follower.trigger_words}")
 
     def _execute(self, command: Command, raw_text: str) -> None:
         if command.type == CommandType.NEXT_SLIDE:

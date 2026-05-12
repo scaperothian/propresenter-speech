@@ -4,8 +4,10 @@ Voice-controlled slide advancement for [ProPresenter](https://renewedvision.com/
 using [Whisper](https://github.com/openai/whisper) ASR via
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper), running on-device.
 
-Say **"next slide"**, **"previous slide"**, or **"go to slide five"** — ProPresenter responds
-in near real-time without touching a keyboard or clicker.
+Two modes of operation:
+
+- **`presentation` mode** (default) — respond to explicit voice commands: "next slide", "previous slide", "go to slide five".
+- **`follow` mode** — automatically advance when the last word(s) of the active slide are heard, while also accepting all explicit commands.
 
 ---
 
@@ -48,22 +50,26 @@ poetry run propresenter-speech --help
 2. Run the CLI:
 
 ```bash
+# Explicit-command mode (default)
 poetry run propresenter-speech
+
+# Follow mode — auto-advances on the last word of each slide
+poetry run propresenter-speech --mode follow
 ```
 
 3. Speak into your mic:
 
-| Say | Action |
-|-----|--------|
-| "next slide" | Advance one slide |
-| "previous slide" | Go back one slide |
-| "go back" | Go back one slide |
-| "go to slide five" | Jump to slide 5 |
-| "slide number 12" | Jump to slide 12 |
-| "go to slide twenty" | Jump to slide 20 |
-| "jump to slide 3" | Jump to slide 3 |
+| Say | Action | Modes |
+|-----|--------|-------|
+| "next slide" | Advance one slide | both |
+| "previous slide" | Go back one slide | both |
+| "go back" | Go back one slide | both |
+| "go to slide five" | Jump to slide 5 | both |
+| "slide number 12" | Jump to slide 12 | both |
+| "jump to slide 3" | Jump to slide 3 | both |
+| *(last word of slide)* | Auto-advance | follow only |
 
-Press **Ctrl-C** to stop.
+Press **Ctrl-C** or type `q` + Enter to stop.
 
 ---
 
@@ -77,6 +83,17 @@ ProPresenter connection:
   --port PORT           ProPresenter API port (default: 1025)
   --timeout TIMEOUT     HTTP request timeout in seconds (default: 5)
 
+Presentation selection:
+  --presentation NAME   Activate a presentation by name before listening
+                        (case-insensitive substring match; skipped if omitted)
+  --library NAME        Library to search when --presentation is given (default: Default)
+
+Operation mode:
+  --mode {presentation,follow}
+                        presentation: explicit commands only (default)
+                        follow: auto-advance on slide trigger words + explicit commands
+  --trigger-words N     (follow mode) words from end of slide to use as trigger (default: 1)
+
 Whisper ASR:
   --model {tiny,base,small,medium,large}
                         Whisper model size (default: base)
@@ -88,20 +105,34 @@ Audio capture:
   --silence-threshold   RMS energy threshold 0–1 for speech vs. silence (default: 0.01)
   --silence-duration    Seconds of silence to close a speech segment (default: 0.8)
   --list-devices        Print available input devices and exit
+  --audio-file PATH     Process a WAV/FLAC/OGG file instead of the microphone
+                        (resampled to 16 kHz automatically; program idles when done)
 
 Misc:
-  --verbose             Print each transcription to stdout
+  --verbose             Print transcriptions and trigger words to stdout
   --log-level {DEBUG,INFO,WARNING,ERROR}
 ```
 
 ### Examples
 
 ```bash
+# Activate a specific presentation, then listen for commands
+poetry run propresenter-speech --presentation "Sermon Slides"
+
+# Activate from a non-default library
+poetry run propresenter-speech --presentation "How Great Thou Art" --library Songs
+
+# Activate a presentation and use follow mode
+poetry run propresenter-speech --presentation "Sermon Slides" --mode follow
+
+# Follow mode using the last 2 words as trigger (fewer false positives)
+poetry run propresenter-speech --mode follow --trigger-words 2
+
 # Use a more accurate model
 poetry run propresenter-speech --model small
 
-# Show what Whisper is hearing
-poetry run propresenter-speech --verbose
+# Show what Whisper is hearing and which trigger words are active
+poetry run propresenter-speech --mode follow --verbose
 
 # List audio input devices, then use device #2
 poetry run propresenter-speech --list-devices
@@ -128,26 +159,51 @@ AudioCapture          (sounddevice — 100 ms chunks, energy VAD)
 Transcriber           (faster-whisper — base model by default)
     │  transcribed text
     ▼
-CommandParser         (regex + word2number)
-    │  Command(type, slide_number)
-    ▼
-ProPresenterController  (HTTP GET to ProPresenter Network API)
+SpeechController  ── mode-aware dispatch ──────────────────────────┐
+    │                                                               │
+    │  presentation mode                                      follow mode
+    │  (explicit commands only)               (trigger words + explicit commands)
+    ▼                                                               │
+CommandParser                                               SlideFollower
+    │  Command(type, slide_number)               (caches presentation details;
+    ▼                                             gets slide index each refresh;
+ProPresenterController  (HTTP GET to ProPresenter Network API)      reads slide["text"] directly)
 ```
 
-All components are injected via `SpeechController` — easy to swap (e.g. replace
-`Transcriber` with a web-hosted model in a future iteration).
+**Follow mode slide-text flow (per `refresh()`):**
+
+| Step | Endpoint |
+|------|----------|
+| 1. Resolve presentation UUID | `GET /v1/presentation/active` |
+| 2. Fetch + cache presentation details | `GET /v1/presentation/{uuid}` |
+| 3. Get current slide index | `GET /v1/presentation/slide_index?chunked=false` |
+| 4. Read `slides[index]["text"]` | — (from cached details) |
+| fallback | `GET /v1/status/slide` |
+
+Presentation details are cached for the lifetime of the `SlideFollower` and only re-fetched when the active presentation UUID changes.
+
+After each auto-advance `refresh_after_advance()` is used instead of `refresh()`: it increments the locally cached slide index rather than calling `GET /v1/presentation/slide_index` again, avoiding a race condition where the API returns the pre-advance value. A single audio segment can therefore advance through multiple slides in one pass.
+
+Full ProPresenter API reference: `http://<propresenter-ip>:1025/v1/doc/index.html#`
+
+All components are injected into `SpeechController` — easy to swap (e.g. replace
+`Transcriber` with a web-hosted model, or add new `Mode` variants).
 
 ---
 
 ## Running the tests
 
-Tests are fully unit-level — no microphone, GPU, or ProPresenter instance needed.
+Most tests are fully unit-level — no microphone, GPU, or ProPresenter instance needed.
 
 ```bash
-poetry run pytest          # run all tests
+poetry run pytest          # run all tests (unit + integration)
 poetry run pytest -v       # verbose output
 poetry run pytest tests/test_command_parser.py -v
 ```
+
+`tests/test_integration_follow.py` contains two test classes:
+- `TestFollowModeTriggerOrder` — pure unit tests for `refresh_after_advance()` trigger sequencing; always runs.
+- `TestFollowModeAudio` — end-to-end tests using the real WAV file in `audio/` and the Whisper `tiny` model; automatically skipped when the audio file is absent.
 
 ---
 
@@ -177,6 +233,13 @@ for better word-error rate on numbers.
 - Continuous transcript display  
 - Open/switch presentation by name  
 - Web-based Whisper backend (option for slower Macs)
+
+## Modes reference
+
+| `--mode` | Auto-advance | Explicit commands | Requires slide text from API |
+|----------|-------------|-------------------|-------------------------------|
+| `presentation` | No | Yes | No |
+| `follow` | Yes (on trigger words) | Yes | Yes (exits on startup if unavailable) |
 
 ---
 

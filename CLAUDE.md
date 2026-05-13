@@ -15,15 +15,17 @@ ProPresenter HTTP API to advance, retreat, or jump to a specific slide.
 | Whisper transcription | `src/propresenter_speech/transcriber.py` | lazy-loads via faster-whisper; no PyTorch; models from HuggingFace |
 | Command parsing | `src/propresenter_speech/command_parser.py` | pure Python, no I/O |
 | Audio capture / VAD | `src/propresenter_speech/audio_capture.py` | `AudioCapture` (mic) and `AudioFileCapture` (WAV/FLAC/OGG); energy-based VAD |
-| Mode enum | `src/propresenter_speech/modes.py` | `Mode.PRESENTATION` / `Mode.FOLLOW` |
+| Mode enum | `src/propresenter_speech/modes.py` | `Mode.PRESENTATION` / `Mode.FOLLOW` / `Mode.FOLLOW_ENHANCED` |
 | Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text, extracts trigger words |
-| Pipeline orchestration | `src/propresenter_speech/speech_controller.py` | mode-aware dispatch; wires all components |
-| CLI entry point | `src/propresenter_speech/main.py` | argparse, calls `SpeechController.run()` |
+| Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — dense (sentence-transformers all-MiniLM-L6-v2) + optional BM25 index; `find_slide_with_margin()` returns `(index, score, margin)` |
+| Follow-enhanced controller | `src/propresenter_speech/follow_enhanced_controller.py` | `FollowEnhancedController` — ring-buffer audio, polls Whisper every `poll_interval` s, cues best-matching slide via `go_to_slide()` |
+| Pipeline orchestration | `src/propresenter_speech/speech_controller.py` | mode-aware dispatch for `presentation` / `follow`; wires all components |
+| CLI entry point | `src/propresenter_speech/main.py` | argparse, calls `SpeechController.run()` or `FollowEnhancedController.run()` |
 | ProPresenter HTTP client | `../propresenter-slides/src/propresenter_slides/main.py` | imported via path dependency |
 
 ## Project conventions
 
-- **Python 3.10+** — use native `list[...]` / `tuple[...]` / `X | Y` type hints.
+- **Python 3.11+** — use native `list[...]` / `tuple[...]` / `X | Y` type hints.
 - **Poetry** for dependency management (`pyproject.toml`); run `poetry install` before anything else.
 - **No comments** unless the WHY is non-obvious.  Self-documenting names preferred.
 - Tests live in `tests/`; all external I/O is mocked — no network, mic, or GPU needed.
@@ -38,6 +40,7 @@ poetry install
 poetry run propresenter-speech                          # presentation mode (default)
 poetry run propresenter-speech --mode follow            # follow mode
 poetry run propresenter-speech --mode follow --trigger-words 2  # use last 2 words as trigger
+poetry run propresenter-speech --mode follow-enhanced   # semantic embedding mode
 
 # Common flags
 poetry run propresenter-speech --model small         # better accuracy
@@ -79,9 +82,10 @@ inside `Transcriber.load()`).
 
 1. Add a new value to the `Mode` enum in `modes.py`.
 2. Add the mode choice to `--mode` in `main.py` and wire up any new
-   dependencies (e.g. a new controller class analogous to `SlideFollower`).
-3. Branch on the new `Mode` value in `SpeechController._handle_segment()`.
-4. Add tests in `test_speech_controller.py`.
+   dependencies (e.g. a new controller class analogous to `SlideFollower` or `FollowEnhancedController`).
+3. If the mode uses `SpeechController`, branch on the new `Mode` value in `SpeechController._handle_segment()`.
+   If it has its own run-loop (like `follow-enhanced`), dispatch from `main()` before `SpeechController` is built.
+4. Add tests in `test_speech_controller.py` or a dedicated test module.
 
 ## Follow mode — how it works
 
@@ -128,10 +132,31 @@ If Whisper is triggering on background noise:
 If commands are being cut off mid-utterance:
 - Lower `--silence-duration` slightly (e.g. `0.5`).
 
+## Follow-enhanced mode — how it works
+
+`FollowEnhancedController` runs an independent loop — it does **not** go through `SpeechController`.
+
+1. **Startup** — `main.py:_run_follow_enhanced()` fetches all slides from the active presentation,
+   filters to those with text, calls `SlideEmbedder.build()` to compute dense embeddings
+   (and optionally a BM25 index), then loads Whisper before starting the controller.
+2. **Ring buffer** — a `sounddevice.InputStream` fills a `collections.deque` capped at
+   `window_seconds × SAMPLE_RATE` frames.  Each audio block is appended in the stream callback.
+3. **Poll loop** — a background thread wakes every `poll_interval` seconds.  If Whisper is not
+   busy and the buffer holds at least 0.5 s of audio it snapshots the buffer and spawns a
+   transcription thread.
+4. **Transcription + matching** — `Transcriber.transcribe()` runs on the snapshot.  The resulting
+   words are appended to a rolling `word_buffer` (capped at 200 words).  The last `context_words`
+   words form the query string for `SlideEmbedder.find_slide_with_margin()`.
+5. **Cue logic** — a slide is cued when:
+   - `confidence >= similarity_threshold`, **or** `margin >= min_margin`
+   - the result is a different slide from the currently cued one
+   `ProPresenterController.go_to_slide(slide_idx + 1)` is called directly; explicit voice commands
+   are **not** parsed in this mode.
+
 ## Planned future modes
 
 - **Keyword wake-word** — only activate on "Hey ProPresenter" or similar.
-- **Continuous transcription mode** — stream a live transcript alongside commands.
+- **Continuous transcript display** — stream a live transcript alongside commands.
 - **Web-based Whisper** — swap `Transcriber` backend to a hosted API if on-device
   latency is too high.
 - **Presentation name commands** — "open sermon slides", "switch to announcements".
@@ -142,3 +167,4 @@ If commands are being cut off mid-utterance:
 |----------|-----------|
 | `presentation` (default) | Responds to explicit voice commands only |
 | `follow` | Auto-advances on slide trigger words **and** accepts all explicit commands |
+| `follow-enhanced` | Semantic embedding match against all slides; cues whichever slide best matches recent speech; does **not** parse explicit commands |

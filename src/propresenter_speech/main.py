@@ -20,7 +20,16 @@ from propresenter_slides.main import ProPresenterController
 
 from .audio_capture import AudioCapture, AudioFileCapture, list_input_devices
 from .command_parser import CommandParser
+from .follow_enhanced_controller import (
+    FollowEnhancedController,
+    DEFAULT_CONTEXT_WORDS,
+    DEFAULT_MIN_MARGIN,
+    DEFAULT_POLL_INTERVAL,
+    DEFAULT_SIMILARITY_THRESHOLD,
+    DEFAULT_WINDOW_SECONDS,
+)
 from .modes import Mode
+from .slide_embedder import SlideEmbedder, DEFAULT_BM25_WEIGHT
 from .slide_follower import SlideFollower
 from .speech_controller import SpeechController
 from .transcriber import Transcriber
@@ -59,10 +68,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     mode_grp.add_argument(
         "--mode",
         default="presentation",
-        choices=["presentation", "follow"],
+        choices=["presentation", "follow", "follow-enhanced"],
         help=(
             "presentation: respond to explicit voice commands only. "
-            "follow: also auto-advance when the last word(s) of the active slide are heard."
+            "follow: also auto-advance when the last word(s) of the active slide are heard. "
+            "follow-enhanced: semantic embedding search — cues whichever slide best matches recent speech."
         ),
     )
     mode_grp.add_argument(
@@ -72,6 +82,57 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         dest="trigger_words",
         metavar="N",
         help="(follow mode) number of words from the end of the slide text to use as trigger (default: 1)",
+    )
+    mode_grp.add_argument(
+        "--context-words",
+        type=int,
+        default=DEFAULT_CONTEXT_WORDS,
+        dest="context_words",
+        metavar="N",
+        help="(follow-enhanced) recent spoken words to form the query n-gram (default: %(default)s)",
+    )
+    mode_grp.add_argument(
+        "--similarity-threshold",
+        type=float,
+        default=DEFAULT_SIMILARITY_THRESHOLD,
+        dest="similarity_threshold",
+        metavar="FLOAT",
+        help="(follow-enhanced) minimum hybrid score to trigger a slide cue (default: %(default)s)",
+    )
+    mode_grp.add_argument(
+        "--min-margin",
+        type=float,
+        default=DEFAULT_MIN_MARGIN,
+        dest="min_margin",
+        metavar="FLOAT",
+        help=(
+            "(follow-enhanced) minimum gap between best and second-best score to trigger "
+            "even when below --similarity-threshold (default: %(default)s)"
+        ),
+    )
+    mode_grp.add_argument(
+        "--window-seconds",
+        type=float,
+        default=DEFAULT_WINDOW_SECONDS,
+        dest="window_seconds",
+        metavar="SECS",
+        help="(follow-enhanced) rolling audio window length in seconds (default: %(default)s)",
+    )
+    mode_grp.add_argument(
+        "--poll-interval",
+        type=float,
+        default=DEFAULT_POLL_INTERVAL,
+        dest="poll_interval",
+        metavar="SECS",
+        help="(follow-enhanced) seconds between Whisper inference calls (default: %(default)s)",
+    )
+    mode_grp.add_argument(
+        "--bm25-weight",
+        type=float,
+        default=DEFAULT_BM25_WEIGHT,
+        dest="bm25_weight",
+        metavar="FLOAT",
+        help="(follow-enhanced) BM25 share of the hybrid score 0.0=dense-only, 1.0=BM25-only (default: %(default)s)",
     )
 
     # Whisper
@@ -132,6 +193,67 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_follow_enhanced(pro, args) -> None:
+    """Build slide embeddings then hand off to FollowEnhancedController."""
+    library_data = pro.get_library(args.library)
+    if library_data is None:
+        print(f"Error: Could not query '{args.library}' library.")
+        sys.exit(1)
+
+    uuid = pro.get_active_presentation_uuid()
+    if not uuid:
+        print("Error: Could not retrieve active presentation UUID. Make sure a presentation is active in ProPresenter.")
+        sys.exit(1)
+
+    details = pro.get_presentation_details(uuid)
+    if not details:
+        print(f"Error: Could not retrieve presentation details for UUID {uuid}.")
+        sys.exit(1)
+
+    slides = pro.find_slides(details)
+    if not slides:
+        print("Error: No slides found in the active presentation.")
+        sys.exit(1)
+
+    # Keep only slides that have text, but remember their original 0-based index
+    # so go_to_slide() targets the right ProPresenter slide even when some are skipped.
+    indexed_texts = [
+        (i, s.get("text", "").strip())
+        for i, s in enumerate(slides)
+        if isinstance(s, dict) and s.get("text", "").strip()
+    ]
+    if not indexed_texts:
+        print("Error: No slides with text found in the active presentation.")
+        sys.exit(1)
+
+    slide_indices = [i for i, _ in indexed_texts]
+    slide_texts = [t for _, t in indexed_texts]
+    print(f"Found {len(slide_texts)} slides with text (out of {len(slides)} total). Building embeddings…")
+    embedder = SlideEmbedder(bm25_weight=args.bm25_weight)
+    embedder.load()
+    embedder.build(slide_texts, slide_indices=slide_indices)
+    print("Embeddings ready.")
+
+    print("Loading Whisper model — this may take a moment on first run…")
+    transcriber = Transcriber(model_name=args.model)
+    transcriber.load()
+    print("Whisper ready.")
+
+    controller = FollowEnhancedController(
+        transcriber=transcriber,
+        pro_controller=pro,
+        slide_embedder=embedder,
+        device=args.device,
+        window_seconds=args.window_seconds,
+        poll_interval=args.poll_interval,
+        context_words=args.context_words,
+        similarity_threshold=args.similarity_threshold,
+        min_margin=args.min_margin,
+        verbose=args.verbose,
+    )
+    controller.run()
+
+
 def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)
     parser = _build_arg_parser()
@@ -182,6 +304,10 @@ def main() -> None:
             print(f"Error: Failed to activate '{args.presentation}'.")
             sys.exit(1)
         print(f"Activated '{args.presentation}'.")
+
+    if mode == Mode.FOLLOW_ENHANCED:
+        _run_follow_enhanced(pro, args)
+        return
 
     slide_follower = SlideFollower(pro, trigger_word_count=args.trigger_words) if mode == Mode.FOLLOW else None
 

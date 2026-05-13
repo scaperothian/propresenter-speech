@@ -109,7 +109,7 @@ Operation mode:
                         even when below --similarity-threshold (default: 0.15)
   --window-seconds SECS (follow-enhanced) rolling audio window length in seconds (default: 2.0)
   --poll-interval SECS  (follow-enhanced) seconds between Whisper inference calls (default: 0.2)
-  --bm25-weight FLOAT   (follow-enhanced) BM25 share of hybrid score; 0.0=dense-only, 1.0=BM25-only (default: 0.0)
+
 
 Whisper ASR:
   --model {tiny,base,small,medium,large}
@@ -150,9 +150,6 @@ poetry run propresenter-speech --mode follow-enhanced
 
 # Follow-enhanced with stricter matching (raise threshold) or more context
 poetry run propresenter-speech --mode follow-enhanced --similarity-threshold 0.55 --context-words 5
-
-# Follow-enhanced blending BM25 keyword matching with dense embeddings
-poetry run propresenter-speech --mode follow-enhanced --bm25-weight 0.3
 
 # Use a more accurate model
 poetry run propresenter-speech --model small
@@ -218,7 +215,7 @@ sounddevice InputStream  →  ring buffer (rolling WINDOW_SECONDS of PCM)
                               ProPresenterController.go_to_slide()  ← only on new match
 ```
 
-`SlideEmbedder` builds dense cosine-similarity scores over `all-MiniLM-L6-v2` embeddings (+ optional BM25 blending via `--bm25-weight`) at startup. Slide indices are preserved so slides without text are skipped cleanly.
+`SlideEmbedder` builds dense cosine-similarity scores over `all-MiniLM-L6-v2` embeddings at startup. Slide indices are preserved so slides without text are skipped cleanly.
 
 **Follow mode slide-text flow (per `refresh()`):**
 

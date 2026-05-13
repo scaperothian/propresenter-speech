@@ -29,7 +29,7 @@ from .follow_enhanced_controller import (
     DEFAULT_WINDOW_SECONDS,
 )
 from .modes import Mode
-from .slide_embedder import SlideEmbedder, DEFAULT_BM25_WEIGHT
+from .slide_embedder import SlideEmbedder
 from .slide_follower import SlideFollower
 from .speech_controller import SpeechController
 from .transcriber import Transcriber
@@ -126,15 +126,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="SECS",
         help="(follow-enhanced) seconds between Whisper inference calls (default: %(default)s)",
     )
-    mode_grp.add_argument(
-        "--bm25-weight",
-        type=float,
-        default=DEFAULT_BM25_WEIGHT,
-        dest="bm25_weight",
-        metavar="FLOAT",
-        help="(follow-enhanced) BM25 share of the hybrid score 0.0=dense-only, 1.0=BM25-only (default: %(default)s)",
-    )
-
     # Whisper
     whisper_grp = parser.add_argument_group("Whisper ASR")
     whisper_grp.add_argument(
@@ -229,7 +220,7 @@ def _run_follow_enhanced(pro, args) -> None:
     slide_indices = [i for i, _ in indexed_texts]
     slide_texts = [t for _, t in indexed_texts]
     print(f"Found {len(slide_texts)} slides with text (out of {len(slides)} total). Building embeddings…")
-    embedder = SlideEmbedder(bm25_weight=args.bm25_weight)
+    embedder = SlideEmbedder()
     embedder.load()
     embedder.build(slide_texts, slide_indices=slide_indices)
     print("Embeddings ready.")

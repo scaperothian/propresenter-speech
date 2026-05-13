@@ -85,34 +85,37 @@ class SlideEmbedder:
         """
         if not self._built or not text.strip():
             return -1, 0.0
-        scores = self._cosine_scores(text)
-        best_pos = int(np.argmax(scores))
-        return self._slide_indices[best_pos], float(scores[best_pos])
+        raw = self._cosine_scores(text)
+        best_pos = int(np.argmax(raw))
+        return self._slide_indices[best_pos], float(np.clip(raw[best_pos], 0.0, 1.0))
 
     def find_slide_with_margin(self, text: str) -> tuple[int, float, float]:
         """
-        Like find_slide but also returns the margin (best − second-best score).
+        Like find_slide but also returns the margin (best − second-best raw cosine).
 
-        A large margin means the winner is unambiguous even when the absolute
-        score is modest.  Returns (-1, 0.0, 0.0) on empty query or missing index.
+        Margin is computed on unclipped cosine values so that slides scoring
+        slightly negative still contribute a meaningful spread.  The returned
+        score is clipped to [0, 1]; the margin may be negative (ambiguous match).
+        Returns (-1, 0.0, 0.0) on empty query or missing index.
         """
         if not self._built or not text.strip():
             return -1, 0.0, 0.0
-        scores = self._cosine_scores(text)
-        best_pos = int(np.argmax(scores))
-        best_score = float(scores[best_pos])
-        if len(scores) > 1:
-            second = float(np.partition(scores, -2)[-2])
-            margin = best_score - second
+        raw = self._cosine_scores(text)
+        best_pos = int(np.argmax(raw))
+        best_raw = float(raw[best_pos])
+        if len(raw) > 1:
+            second = float(np.partition(raw, -2)[-2])
+            margin = best_raw - second
         else:
-            margin = best_score
-        return self._slide_indices[best_pos], best_score, margin
+            margin = best_raw
+        return self._slide_indices[best_pos], float(np.clip(best_raw, 0.0, 1.0)), margin
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
     def _cosine_scores(self, text: str) -> np.ndarray:
+        """Return raw (unclipped) cosine similarities in [-1, 1] for all slides."""
         query = np.array(
             self._model.encode([text], show_progress_bar=False)[0],
             dtype=np.float32,
@@ -121,12 +124,11 @@ class SlideEmbedder:
         if query_norm == 0:
             return np.zeros(self._slide_count)
         slide_norms = np.linalg.norm(self._embeddings, axis=1)
-        cosine = np.where(
+        return np.where(
             slide_norms > 0,
             (self._embeddings @ query) / (slide_norms * query_norm),
             0.0,
         )
-        return np.clip(cosine, 0.0, 1.0)
 
     @property
     def slide_count(self) -> int:

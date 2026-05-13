@@ -9,13 +9,12 @@ Run with:
   poetry run pytest tests/test_integration_follow.py -v
 """
 
-import threading
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from propresenter_speech.audio_capture import AudioFileCapture
+from propresenter_speech.audio_pipeline import _resample, SAMPLE_RATE
 from propresenter_speech.slide_follower import SlideFollower
 from propresenter_speech.transcriber import Transcriber
 
@@ -173,11 +172,18 @@ class TestFollowModeAudio:
 
     @pytest.fixture(scope="class")
     def audio_segments(self) -> list[np.ndarray]:
-        segments: list[np.ndarray] = []
-        capture = AudioFileCapture(file_path=str(AUDIO_FILE))
-        capture.start(lambda seg: segments.append(seg))
-        capture._thread.join(timeout=30)
-        return segments
+        import soundfile as sf
+        audio, sr = sf.read(str(AUDIO_FILE), dtype="float32", always_2d=False)
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        if sr != SAMPLE_RATE:
+            audio = _resample(audio, sr, SAMPLE_RATE)
+        window = SAMPLE_RATE * 2  # 2-second chunks
+        return [
+            audio[i : i + window]
+            for i in range(0, len(audio), window)
+            if len(audio[i : i + window]) >= SAMPLE_RATE // 2
+        ]
 
     def _run_follow(self, transcriber: Transcriber, segments: list[np.ndarray]) -> FakeProPresenter:
         fake_pro = FakeProPresenter()

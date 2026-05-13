@@ -119,8 +119,8 @@ Whisper ASR:
 
 Audio capture:
   --device DEVICE       Input device index; see --list-devices (default: system default)
-  --silence-threshold   RMS energy threshold 0–1 for speech vs. silence (default: 0.01)
-  --silence-duration    Seconds of silence to close a speech segment (default: 0.8)
+  --window-seconds SECS Rolling audio window length fed to Whisper (default: 2.0)
+  --poll-interval SECS  Seconds between Whisper inference calls (default: 0.2)
   --list-devices        Print available input devices and exit
   --audio-file PATH     Process a WAV/FLAC/OGG file instead of the microphone
                         (resampled to 16 kHz automatically; program idles when done)
@@ -174,48 +174,27 @@ poetry run propresenter-speech --silence-threshold 0.03
 
 **`presentation` / `follow` pipeline:**
 
+All three modes share a single `AudioPipeline` (ring buffer + Whisper polling). Mode logic lives exclusively in a `ModeHandler` class.
+
 ```
-Microphone
+Microphone (or audio file)
     │
     ▼
-AudioCapture          (sounddevice — 100 ms chunks, energy VAD)
-    │  speech segments (numpy float32 arrays)
+AudioPipeline          (sounddevice ring buffer, poll every --poll-interval s)
+    │  text + rolling word buffer
     ▼
-Transcriber           (faster-whisper — base model by default)
-    │  transcribed text
-    ▼
-SpeechController  ── mode-aware dispatch ──────────────────────────┐
-    │                                                               │
-    │  presentation mode                                      follow mode
-    │  (explicit commands only)               (trigger words + explicit commands)
-    ▼                                                               │
-CommandParser                                               SlideFollower
-    │  Command(type, slide_number)               (caches presentation details;
-    ▼                                             gets slide index each refresh;
-ProPresenterController  (HTTP GET to ProPresenter Network API)      reads slide["text"] directly)
-```
-
-**`follow-enhanced` pipeline:**
-
-```
-Microphone
+ModeHandler.on_transcription()
     │
-    ▼
-sounddevice InputStream  →  ring buffer (rolling WINDOW_SECONDS of PCM)
-                                  │
-                           timer thread (every POLL_INTERVAL s, when Whisper is free)
-                                  │   audio snapshot
-                                  ▼
-                              Transcriber (Whisper)
-                                  │   text → rolling word deque
-                                  ▼
-                              SlideEmbedder.find_slide_with_margin()
-                                  │   (slide_index, confidence, margin)
-                                  ▼
-                              ProPresenterController.go_to_slide()  ← only on new match
+    ├── PresentationHandler  →  CommandParser  →  ProPresenterController
+    │
+    ├── FollowHandler        →  CommandParser + SlideFollower  →  ProPresenterController
+    │                           (SlideFollower caches presentation details,
+    │                            tracks slide index, extracts trigger words)
+    │
+    └── FollowEnhancedHandler →  SlideEmbedder.find_slide_with_margin()  →  ProPresenterController
+                                 (cosine similarity over all-MiniLM-L6-v2 embeddings,
+                                  built at startup from active presentation slides)
 ```
-
-`SlideEmbedder` builds dense cosine-similarity scores over `all-MiniLM-L6-v2` embeddings at startup. Slide indices are preserved so slides without text are skipped cleanly.
 
 **Follow mode slide-text flow (per `refresh()`):**
 
@@ -257,12 +236,12 @@ poetry run pytest tests/test_command_parser.py -v
 ## Tuning tips
 
 **Whisper triggers on background noise**  
-Raise `--silence-threshold` (try `0.02`–`0.05`).  You can also switch to a
-quieter environment or use a directional/headset microphone.
+Use a directional or headset microphone, or raise `--window-seconds` so Whisper
+gets more context and is less likely to misfire on a short noise burst.
 
-**Commands are cut off** (e.g. "go to slide" fires before you finish)  
-Lower `--silence-duration` slightly (e.g. `0.5`) or raise it to give yourself
-more time (e.g. `1.2`).
+**Commands are cut off or lag**  
+Lower `--poll-interval` (e.g. `0.1`) for faster response, or raise
+`--window-seconds` (e.g. `3.0`) to give Whisper more audio context.
 
 **Whisper is too slow** (noticeable lag)  
 Switch to `--model tiny`.  faster-whisper uses CTranslate2 and int8 quantisation

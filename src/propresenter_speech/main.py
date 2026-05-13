@@ -6,9 +6,9 @@ Usage examples:
   propresenter-speech --presentation "Sermon Slides"
   propresenter-speech --presentation "Worship" --library Songs --mode follow
   propresenter-speech --mode follow --trigger-words 2
+  propresenter-speech --mode follow-enhanced
   propresenter-speech --host 192.168.1.10 --port 1025 --model small --verbose
   propresenter-speech --list-devices
-  propresenter-speech --device 2 --silence-threshold 0.02
 """
 
 import argparse
@@ -18,20 +18,22 @@ from pathlib import Path
 
 from propresenter_slides.main import ProPresenterController
 
-from .audio_capture import AudioCapture, AudioFileCapture, list_input_devices
+from .audio_pipeline import (
+    AudioPipeline,
+    DEFAULT_POLL_INTERVAL,
+    DEFAULT_WINDOW_SECONDS,
+    list_input_devices,
+)
 from .command_parser import CommandParser
-from .follow_enhanced_controller import (
-    FollowEnhancedController,
+from .handlers import FollowEnhancedHandler, FollowHandler, PresentationHandler
+from .handlers.follow_enhanced import (
     DEFAULT_CONTEXT_WORDS,
     DEFAULT_MIN_MARGIN,
-    DEFAULT_POLL_INTERVAL,
     DEFAULT_SIMILARITY_THRESHOLD,
-    DEFAULT_WINDOW_SECONDS,
 )
 from .modes import Mode
 from .slide_embedder import SlideEmbedder
 from .slide_follower import SlideFollower
-from .speech_controller import SpeechController
 from .transcriber import Transcriber
 
 
@@ -42,13 +44,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    # ProPresenter connection
     conn = parser.add_argument_group("ProPresenter connection")
     conn.add_argument("--host", default="localhost", help="ProPresenter hostname or IP")
     conn.add_argument("--port", type=int, default=1025, help="ProPresenter API port")
     conn.add_argument("--timeout", type=int, default=5, help="HTTP request timeout (seconds)")
 
-    # Presentation selection
     pres_grp = parser.add_argument_group("Presentation selection")
     pres_grp.add_argument(
         "--presentation",
@@ -63,7 +63,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Library to search when --presentation is given",
     )
 
-    # Mode
     mode_grp = parser.add_argument_group("Operation mode")
     mode_grp.add_argument(
         "--mode",
@@ -81,7 +80,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=1,
         dest="trigger_words",
         metavar="N",
-        help="(follow mode) number of words from the end of the slide text to use as trigger (default: 1)",
+        help="(follow mode) number of words from the end of the slide text to use as trigger",
     )
     mode_grp.add_argument(
         "--context-words",
@@ -89,7 +88,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CONTEXT_WORDS,
         dest="context_words",
         metavar="N",
-        help="(follow-enhanced) recent spoken words to form the query n-gram (default: %(default)s)",
+        help="(follow-enhanced) recent spoken words to form the query n-gram",
     )
     mode_grp.add_argument(
         "--similarity-threshold",
@@ -97,7 +96,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SIMILARITY_THRESHOLD,
         dest="similarity_threshold",
         metavar="FLOAT",
-        help="(follow-enhanced) minimum hybrid score to trigger a slide cue (default: %(default)s)",
+        help="(follow-enhanced) minimum hybrid score to trigger a slide cue",
     )
     mode_grp.add_argument(
         "--min-margin",
@@ -105,28 +104,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MIN_MARGIN,
         dest="min_margin",
         metavar="FLOAT",
-        help=(
-            "(follow-enhanced) minimum gap between best and second-best score to trigger "
-            "even when below --similarity-threshold (default: %(default)s)"
-        ),
+        help="(follow-enhanced) minimum gap between best and second-best score to trigger",
     )
-    mode_grp.add_argument(
-        "--window-seconds",
-        type=float,
-        default=DEFAULT_WINDOW_SECONDS,
-        dest="window_seconds",
-        metavar="SECS",
-        help="(follow-enhanced) rolling audio window length in seconds (default: %(default)s)",
-    )
-    mode_grp.add_argument(
-        "--poll-interval",
-        type=float,
-        default=DEFAULT_POLL_INTERVAL,
-        dest="poll_interval",
-        metavar="SECS",
-        help="(follow-enhanced) seconds between Whisper inference calls (default: %(default)s)",
-    )
-    # Whisper
+
     whisper_grp = parser.add_argument_group("Whisper ASR")
     whisper_grp.add_argument(
         "--model",
@@ -135,8 +115,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Whisper model size (smaller = faster, larger = more accurate)",
     )
 
-    # Audio
-    audio_grp = parser.add_argument_group("Audio capture")
+    audio_grp = parser.add_argument_group("Audio pipeline")
     audio_grp.add_argument(
         "--device",
         type=int,
@@ -144,18 +123,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Input audio device index (see --list-devices; default: system default)",
     )
     audio_grp.add_argument(
-        "--silence-threshold",
+        "--window-seconds",
         type=float,
-        default=0.01,
-        dest="silence_threshold",
-        help="RMS energy threshold (0–1) separating speech from silence",
+        default=DEFAULT_WINDOW_SECONDS,
+        dest="window_seconds",
+        metavar="SECS",
+        help="Rolling audio window length fed to Whisper",
     )
     audio_grp.add_argument(
-        "--silence-duration",
+        "--poll-interval",
         type=float,
-        default=0.8,
-        dest="silence_duration",
-        help="Seconds of silence required to close a speech segment",
+        default=DEFAULT_POLL_INTERVAL,
+        dest="poll_interval",
+        metavar="SECS",
+        help="Seconds between Whisper inference calls",
     )
     audio_grp.add_argument(
         "--list-devices",
@@ -171,7 +152,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Process an audio file instead of the microphone (WAV/FLAC/OGG; resampled to 16 kHz automatically)",
     )
 
-    # Misc
     parser.add_argument("--verbose", action="store_true", help="Print transcribed text to stdout")
     parser.add_argument(
         "--log-level",
@@ -184,13 +164,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_follow_enhanced(pro, args) -> None:
-    """Build slide embeddings then hand off to FollowEnhancedController."""
-    library_data = pro.get_library(args.library)
-    if library_data is None:
-        print(f"Error: Could not query '{args.library}' library.")
-        sys.exit(1)
-
+def _build_follow_enhanced_handler(pro: ProPresenterController, args) -> FollowEnhancedHandler:
     uuid = pro.get_active_presentation_uuid()
     if not uuid:
         print("Error: Could not retrieve active presentation UUID. Make sure a presentation is active in ProPresenter.")
@@ -206,8 +180,6 @@ def _run_follow_enhanced(pro, args) -> None:
         print("Error: No slides found in the active presentation.")
         sys.exit(1)
 
-    # Keep only slides that have text, but remember their original 0-based index
-    # so go_to_slide() targets the right ProPresenter slide even when some are skipped.
     indexed_texts = [
         (i, s.get("text", "").strip())
         for i, s in enumerate(slides)
@@ -220,29 +192,20 @@ def _run_follow_enhanced(pro, args) -> None:
     slide_indices = [i for i, _ in indexed_texts]
     slide_texts = [t for _, t in indexed_texts]
     print(f"Found {len(slide_texts)} slides with text (out of {len(slides)} total). Building embeddings…")
+
     embedder = SlideEmbedder()
     embedder.load()
     embedder.build(slide_texts, slide_indices=slide_indices)
     print("Embeddings ready.")
 
-    print("Loading Whisper model — this may take a moment on first run…")
-    transcriber = Transcriber(model_name=args.model)
-    transcriber.load()
-    print("Whisper ready.")
-
-    controller = FollowEnhancedController(
-        transcriber=transcriber,
+    return FollowEnhancedHandler(
         pro_controller=pro,
         slide_embedder=embedder,
-        device=args.device,
-        window_seconds=args.window_seconds,
-        poll_interval=args.poll_interval,
         context_words=args.context_words,
         similarity_threshold=args.similarity_threshold,
         min_margin=args.min_margin,
         verbose=args.verbose,
     )
-    controller.run()
 
 
 def main() -> None:
@@ -271,10 +234,8 @@ def main() -> None:
 
     mode = Mode(args.mode)
 
-    # Verify ProPresenter is reachable before loading the (large) Whisper model.
     pro = ProPresenterController(host=args.host, port=args.port, timeout=args.timeout)
-    status = pro.get_status()
-    if status is None:
+    if pro.get_status() is None:
         print(
             f"Error: Cannot reach ProPresenter at {args.host}:{args.port}.\n"
             "Make sure ProPresenter is running and the Network API is enabled."
@@ -297,34 +258,35 @@ def main() -> None:
         print(f"Activated '{args.presentation}'.")
 
     if mode == Mode.FOLLOW_ENHANCED:
-        _run_follow_enhanced(pro, args)
-        return
-
-    slide_follower = SlideFollower(pro, trigger_word_count=args.trigger_words) if mode == Mode.FOLLOW else None
-
-    if args.audio_file:
-        audio_source = AudioFileCapture(
-            file_path=args.audio_file,
-            silence_threshold=args.silence_threshold,
-            silence_duration=args.silence_duration,
+        handler = _build_follow_enhanced_handler(pro, args)
+    elif mode == Mode.FOLLOW:
+        handler = FollowHandler(
+            pro_controller=pro,
+            command_parser=CommandParser(),
+            slide_follower=SlideFollower(pro, trigger_word_count=args.trigger_words),
+            verbose=args.verbose,
         )
     else:
-        audio_source = AudioCapture(
-            device=args.device,
-            silence_threshold=args.silence_threshold,
-            silence_duration=args.silence_duration,
+        handler = PresentationHandler(
+            pro_controller=pro,
+            command_parser=CommandParser(),
+            verbose=args.verbose,
         )
 
-    controller = SpeechController(
-        transcriber=Transcriber(model_name=args.model),
-        command_parser=CommandParser(),
-        pro_controller=pro,
-        audio_capture=audio_source,
-        mode=mode,
-        slide_follower=slide_follower,
+    print("Loading Whisper model — this may take a moment on first run…")
+    transcriber = Transcriber(model_name=args.model)
+    transcriber.load()
+    print("Whisper ready.")
+
+    AudioPipeline(
+        transcriber=transcriber,
+        handler=handler,
+        device=args.device,
+        audio_file=args.audio_file,
+        window_seconds=args.window_seconds,
+        poll_interval=args.poll_interval,
         verbose=args.verbose,
-    )
-    controller.run()
+    ).run()
 
 
 if __name__ == "__main__":

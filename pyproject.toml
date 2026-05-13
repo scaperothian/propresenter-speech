@@ -7,14 +7,16 @@ readme = "README.md"
 packages = [{include = "propresenter_speech", from = "src"}]
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = ">=3.11,<4.0"
 faster-whisper = "*"
 sounddevice = "*"
 soundfile = "*"
-numpy = "*"
+numpy = ">=2.4"
 requests = "*"
 word2number = "*"
+sentence-transformers = "^3.0"
 propresenter-slides = {path = "../propresenter-slides", develop = true}
+rank-bm25 = "^0.2.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0"

@@ -1356,24 +1356,6 @@ files = [
 ]
 
 [[package]]
-name = "rank-bm25"
-version = "0.2.2"
-description = "Various BM25 algorithms for document ranking"
-optional = false
-python-versions = "*"
-groups = ["main"]
-files = [
-    {file = "rank_bm25-0.2.2-py3-none-any.whl", hash = "sha256:7bd4a95571adadfc271746fa146a4bcfd89c0cf731e49c3d1ad863290adbe8ae"},
-    {file = "rank_bm25-0.2.2.tar.gz", hash = "sha256:096ccef76f8188563419aaf384a02f0ea459503fdf77901378d4fd9d87e5e51d"},
-]
-
-[package.dependencies]
-numpy = "*"
-
-[package.extras]
-dev = ["pytest"]
-
-[[package]]
 name = "regex"
 version = "2026.5.9"
 description = "Alternative regular expression module, to replace re."
@@ -2079,4 +2061,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0"
-content-hash = "917cd98c8efb7ec324cbfa37b9ed4f095e76bb28c294924971ff20c02dff3680"
+content-hash = "2b0e95e3f1a32b0b9d7bde222085c13f610d52a3c436a137cb3a09199cffa40b"

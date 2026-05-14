@@ -17,7 +17,7 @@ ProPresenter HTTP API to advance, retreat, or jump to a specific slide.
 | Audio capture / VAD | `src/propresenter_speech/audio_capture.py` | `AudioCapture` (mic) and `AudioFileCapture` (WAV/FLAC/OGG); energy-based VAD |
 | Mode enum | `src/propresenter_speech/modes.py` | `Mode.PRESENTATION` / `Mode.FOLLOW` / `Mode.FOLLOW_ENHANCED` |
 | Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text, extracts trigger words |
-| Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — dense (sentence-transformers all-MiniLM-L6-v2) + optional BM25 index; `find_slide_with_margin()` returns `(index, score, margin)` |
+| Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — dense cosine similarity over sentence-transformers all-MiniLM-L6-v2 embeddings; `find_slide_with_margin()` returns `(index, score, margin)` |
 | Follow-enhanced controller | `src/propresenter_speech/follow_enhanced_controller.py` | `FollowEnhancedController` — ring-buffer audio, polls Whisper every `poll_interval` s, cues best-matching slide via `go_to_slide()` |
 | Pipeline orchestration | `src/propresenter_speech/speech_controller.py` | mode-aware dispatch for `presentation` / `follow`; wires all components |
 | CLI entry point | `src/propresenter_speech/main.py` | argparse, calls `SpeechController.run()` or `FollowEnhancedController.run()` |
@@ -137,8 +137,8 @@ If commands are being cut off mid-utterance:
 `FollowEnhancedController` runs an independent loop — it does **not** go through `SpeechController`.
 
 1. **Startup** — `main.py:_run_follow_enhanced()` fetches all slides from the active presentation,
-   filters to those with text, calls `SlideEmbedder.build()` to compute dense embeddings
-   (and optionally a BM25 index), then loads Whisper before starting the controller.
+   filters to those with text, calls `SlideEmbedder.build()` to compute dense embeddings,
+   then loads Whisper before starting the controller.
 2. **Ring buffer** — a `sounddevice.InputStream` fills a `collections.deque` capped at
    `window_seconds × SAMPLE_RATE` frames.  Each audio block is appended in the stream callback.
 3. **Poll loop** — a background thread wakes every `poll_interval` seconds.  If Whisper is not

@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 SAMPLE_RATE = 16_000
 DEFAULT_WINDOW_SECONDS = 2.0
 DEFAULT_POLL_INTERVAL = 0.2
-COMMAND_COOLDOWN = 1.5
+COMMAND_COOLDOWN = 1.8
 
 
 class AudioPipeline:
@@ -153,6 +153,7 @@ class AudioPipeline:
             chunk = audio[start : start + self._window_frames]
             if len(chunk) < SAMPLE_RATE * 0.5:
                 continue
+            time.sleep(len(chunk) / SAMPLE_RATE)
             self._process(chunk)
 
         print("\nFile processing complete. Press 'q' + Enter to stop.")

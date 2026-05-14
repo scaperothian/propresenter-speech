@@ -69,6 +69,10 @@ class SlideFollower:
     def has_triggers(self) -> bool:
         return bool(self._trigger_words)
 
+    @property
+    def current_slide_index(self) -> int | None:
+        return self._slide_index
+
     def refresh(self) -> bool:
         """
         Fetch the active slide's text and update trigger words.

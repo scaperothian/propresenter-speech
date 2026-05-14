@@ -25,7 +25,7 @@ from .audio_pipeline import (
     list_input_devices,
 )
 from .command_parser import CommandParser
-from .handlers import FollowEnhancedHandler, FollowHandler, PresentationHandler
+from .handlers import FollowEnhancedHandler, FollowEnhancedPlusHandler, FollowHandler, PresentationHandler
 from .handlers.follow_enhanced import (
     DEFAULT_CONTEXT_WORDS,
     DEFAULT_MIN_MARGIN,
@@ -67,11 +67,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     mode_grp.add_argument(
         "--mode",
         default="presentation",
-        choices=["presentation", "follow", "follow-enhanced"],
+        choices=["presentation", "follow", "follow-enhanced", "follow-enhanced-plus"],
         help=(
             "presentation: respond to explicit voice commands only. "
             "follow: also auto-advance when the last word(s) of the active slide are heard. "
-            "follow-enhanced: semantic embedding search — cues whichever slide best matches recent speech."
+            "follow-enhanced: semantic embedding search — cues whichever slide best matches recent speech. "
+            "follow-enhanced-plus: embedding search + trigger-word fallback — jumps when confident, advances sequentially when ambiguous."
         ),
     )
     mode_grp.add_argument(
@@ -172,7 +173,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _build_follow_enhanced_handler(pro: ProPresenterController, args) -> FollowEnhancedHandler:
+def _build_embedder(pro: ProPresenterController) -> SlideEmbedder:
+    """Fetch slides from the active presentation and return a built SlideEmbedder."""
     uuid = pro.get_active_presentation_uuid()
     if not uuid:
         print("Error: Could not retrieve active presentation UUID. Make sure a presentation is active in ProPresenter.")
@@ -205,10 +207,26 @@ def _build_follow_enhanced_handler(pro: ProPresenterController, args) -> FollowE
     embedder.load()
     embedder.build(slide_texts, slide_indices=slide_indices)
     print("Embeddings ready.")
+    return embedder
 
+
+def _build_follow_enhanced_handler(pro: ProPresenterController, args) -> FollowEnhancedHandler:
     return FollowEnhancedHandler(
         pro_controller=pro,
-        slide_embedder=embedder,
+        slide_embedder=_build_embedder(pro),
+        context_words=args.context_words,
+        similarity_threshold=args.similarity_threshold,
+        min_margin=args.min_margin,
+        verbose=args.verbose,
+    )
+
+
+def _build_follow_enhanced_plus_handler(pro: ProPresenterController, args) -> FollowEnhancedPlusHandler:
+    return FollowEnhancedPlusHandler(
+        pro_controller=pro,
+        command_parser=CommandParser(),
+        slide_follower=SlideFollower(pro, trigger_word_count=args.trigger_words, trigger_index=args.trigger_index),
+        slide_embedder=_build_embedder(pro),
         context_words=args.context_words,
         similarity_threshold=args.similarity_threshold,
         min_margin=args.min_margin,
@@ -267,6 +285,8 @@ def main() -> None:
 
     if mode == Mode.FOLLOW_ENHANCED:
         handler = _build_follow_enhanced_handler(pro, args)
+    elif mode == Mode.FOLLOW_ENHANCED_PLUS:
+        handler = _build_follow_enhanced_plus_handler(pro, args)
     elif mode == Mode.FOLLOW:
         handler = FollowHandler(
             pro_controller=pro,

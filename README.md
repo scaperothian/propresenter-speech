@@ -107,9 +107,6 @@ Operation mode:
                         (follow-enhanced) minimum hybrid score to trigger a slide cue (default: 0.4)
   --min-margin FLOAT    (follow-enhanced) minimum gap between best and second-best score to trigger
                         even when below --similarity-threshold (default: 0.15)
-  --window-seconds SECS (follow-enhanced) rolling audio window length in seconds (default: 2.0)
-  --poll-interval SECS  (follow-enhanced) seconds between Whisper inference calls (default: 0.2)
-
 
 Whisper ASR:
   --model {tiny,base,small,medium,large}
@@ -117,10 +114,10 @@ Whisper ASR:
                         tiny < base < small < medium < large
                         Smaller = faster; larger = more accurate
 
-Audio capture:
+Audio pipeline:
   --device DEVICE       Input device index; see --list-devices (default: system default)
-  --window-seconds SECS Rolling audio window length fed to Whisper (default: 2.0)
-  --poll-interval SECS  Seconds between Whisper inference calls (default: 0.2)
+  --window-seconds SECS Rolling audio window length fed to Whisper, all modes (default: 2.0)
+  --poll-interval SECS  Seconds between Whisper inference calls, all modes (default: 0.2)
   --list-devices        Print available input devices and exit
   --audio-file PATH     Process a WAV/FLAC/OGG file instead of the microphone
                         (resampled to 16 kHz automatically; program idles when done)
@@ -164,8 +161,8 @@ poetry run propresenter-speech --device 2
 # Connect to ProPresenter on another machine
 poetry run propresenter-speech --host 192.168.1.10
 
-# Reduce false positives in a noisy room
-poetry run propresenter-speech --silence-threshold 0.03
+# Reduce false positives in a noisy room (longer window gives Whisper more context)
+poetry run propresenter-speech --window-seconds 3.0
 ```
 
 ---
@@ -212,8 +209,8 @@ After each auto-advance `refresh_after_advance()` is used instead of `refresh()`
 
 Full ProPresenter API reference: `http://<propresenter-ip>:1025/v1/doc/index.html#`
 
-All components are injected into `SpeechController` — easy to swap (e.g. replace
-`Transcriber` with a web-hosted model, or add new `Mode` variants).
+All components are injected into `AudioPipeline` — easy to swap (e.g. replace
+`Transcriber` with a web-hosted model, or add new `ModeHandler` variants).
 
 ---
 

@@ -5,14 +5,11 @@ from collections import deque
 
 from propresenter_slides.main import ProPresenterController
 
+from ..audio_pipeline import COMMAND_COOLDOWN
 from ..command_parser import Command, CommandParser, CommandType
 from ..slide_follower import SlideFollower
 
 logger = logging.getLogger(__name__)
-
-# Seconds to wait after an auto-advance before matching again, so that
-# overlapping rolling windows don't trigger the same slide twice.
-_ADVANCE_COOLDOWN = 1.5
 
 
 class FollowHandler:
@@ -52,13 +49,16 @@ class FollowHandler:
     def on_transcription(self, text: str, word_buffer: deque) -> None:
         command = self.command_parser.parse(text)
         if command.type != CommandType.UNKNOWN:
+            if time.monotonic() - self._last_advance < COMMAND_COOLDOWN:
+                return
             self._execute(command)
+            self._last_advance = time.monotonic()
             self.slide_follower.refresh()
             if self.slide_follower.has_triggers and self.verbose:
                 print(f"  trigger words: {self.slide_follower.trigger_words}")
             return
 
-        if time.monotonic() - self._last_advance < _ADVANCE_COOLDOWN:
+        if time.monotonic() - self._last_advance < COMMAND_COOLDOWN:
             return
 
         if not self.slide_follower.has_triggers:

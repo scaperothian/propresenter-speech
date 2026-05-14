@@ -1,8 +1,10 @@
 import logging
+import time
 from collections import deque
 
 from propresenter_slides.main import ProPresenterController
 
+from ..audio_pipeline import COMMAND_COOLDOWN
 from ..command_parser import Command, CommandParser, CommandType
 
 logger = logging.getLogger(__name__)
@@ -20,17 +22,24 @@ class PresentationHandler:
         self.pro_controller = pro_controller
         self.command_parser = command_parser
         self.verbose = verbose
+        self._last_command_at: float = 0.0
 
     def on_startup(self) -> None:
         pass
 
     def startup_description(self) -> str:
-        return "Listening for voice commands. Say 'next slide', 'previous slide', or 'go to slide N'."
+        return (
+            "Listening for voice commands. "
+            "Say 'next slide', 'previous slide', or 'go to slide N'."
+        )
 
     def on_transcription(self, text: str, word_buffer: deque) -> None:
         command = self.command_parser.parse(text)
         if command.type != CommandType.UNKNOWN:
+            if time.monotonic() - self._last_command_at < COMMAND_COOLDOWN:
+                return
             self._execute(command)
+            self._last_command_at = time.monotonic()
 
     def _execute(self, command: Command) -> None:
         if command.type == CommandType.NEXT_SLIDE:

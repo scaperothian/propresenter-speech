@@ -78,9 +78,9 @@ inside `Transcriber.load()`).
 
 1. Add regex patterns to the appropriate `_*_PATTERNS` list in
    `command_parser.py` (or create a new `CommandType` variant).
-2. Handle the new `CommandType` in `SpeechController._execute()`.
-3. Add unit tests in `tests/test_command_parser.py` and
-   `tests/test_speech_controller.py`.
+2. Handle the new `CommandType` in the relevant handler's `_execute()` method
+   (`PresentationHandler`, `FollowHandler`, or both).
+3. Add unit tests in `tests/test_command_parser.py` and the relevant handler test module.
 
 ## Adding new modes
 
@@ -110,7 +110,7 @@ inside `Transcriber.load()`).
 3. The last N words of the slide text (default 1, `--trigger-words`) become the
    trigger.  Each transcribed segment is checked against both `CommandParser` **and**
    `SlideFollower.matches()`.  An explicit command always takes priority.
-4. On a trigger match, `SpeechController._handle_follow()` loops: it calls
+4. On a trigger match, `FollowHandler.on_transcription()` loops: it calls
    `next_slide()` then `SlideFollower.refresh_after_advance()` which increments the
    locally cached slide index **without** calling `GET /v1/presentation/slide_index`
    again.  This avoids the race condition where the API still returns the pre-advance
@@ -119,6 +119,8 @@ inside `Transcriber.load()`).
    through multiple slides).  The loop exits when the end of the presentation is
    reached (triggers cleared) or the next slide's text no longer matches.
    On an explicit command, a plain `SlideFollower.refresh()` is used instead.
+   A `COMMAND_COOLDOWN` (imported from `audio_pipeline`) prevents the overlapping
+   rolling window from re-triggering the same command or advance.
 
 `ProPresenterController` (in `propresenter-slides`) owns all knowledge of the API
 response shape: `get_active_presentation_uuid()` and `_extract_uuid()` parse the
@@ -126,16 +128,6 @@ UUID; `find_slides()` recursively locates the `"slides"` list; `get_slide_index(
 wraps `GET /v1/presentation/slide_index`.
 
 ProPresenter API reference: `http://<propresenter-ip>:1025/v1/doc/index.html#`
-
-## Audio tuning
-
-If Whisper is triggering on background noise:
-- Use a directional or headset microphone.
-- Increase `--window-seconds` so Whisper has more context and is less sensitive to brief noise bursts.
-
-If commands lag or are missed:
-- Lower `--poll-interval` (e.g. `0.1`) for faster Whisper polling.
-- Lower `--window-seconds` (e.g. `1.0`) for a shorter, more focused context window.
 
 ## Follow-enhanced mode — how it works
 
@@ -157,6 +149,16 @@ If commands lag or are missed:
    - the result is a different slide from the currently cued one
    `ProPresenterController.go_to_slide(slide_idx + 1)` is called directly; explicit voice commands
    are **not** parsed in this mode.
+
+## Audio tuning
+
+If Whisper is triggering on background noise:
+- Use a directional or headset microphone.
+- Increase `--window-seconds` so Whisper has more context and is less sensitive to brief noise bursts.
+
+If commands lag or are missed:
+- Lower `--poll-interval` (e.g. `0.1`) for faster Whisper polling.
+- Lower `--window-seconds` (e.g. `1.0`) for a shorter, more focused context window.
 
 ## Planned future modes
 

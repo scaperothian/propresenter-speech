@@ -24,7 +24,7 @@ def mock_pro():
 
 @pytest.fixture
 def follower(mock_pro):
-    return SlideFollower(mock_pro, trigger_word_count=1)
+    return SlideFollower(mock_pro, trigger_word_count=1, trigger_index=-1)
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +136,25 @@ class TestSlideFollowerRefresh:
         assert follower.trigger_words == ["grace"]
 
     def test_refresh_uses_last_n_words(self, mock_pro):
-        f = SlideFollower(mock_pro, trigger_word_count=2)
+        f = SlideFollower(mock_pro, trigger_word_count=2, trigger_index=-1)
+        _mock_slide_text(mock_pro, "Amazing grace how sweet")
+        f.refresh()
+        assert f.trigger_words == ["how", "sweet"]
+
+    def test_trigger_index_second_to_last(self, mock_pro):
+        f = SlideFollower(mock_pro, trigger_word_count=1, trigger_index=-2)
+        _mock_slide_text(mock_pro, "Amazing grace how sweet")
+        f.refresh()
+        assert f.trigger_words == ["how"]
+
+    def test_trigger_index_with_multiple_words(self, mock_pro):
+        f = SlideFollower(mock_pro, trigger_word_count=2, trigger_index=-2)
+        _mock_slide_text(mock_pro, "Amazing grace how sweet")
+        f.refresh()
+        assert f.trigger_words == ["grace", "how"]
+
+    def test_trigger_index_default_preserves_existing_behavior(self, mock_pro):
+        f = SlideFollower(mock_pro, trigger_word_count=2, trigger_index=-1)
         _mock_slide_text(mock_pro, "Amazing grace how sweet")
         f.refresh()
         assert f.trigger_words == ["how", "sweet"]
@@ -193,7 +211,7 @@ class TestSlideFollowerMatches:
         assert follower.matches("I said GRACE")
 
     def test_all_trigger_words_must_match(self, mock_pro):
-        f = SlideFollower(mock_pro, trigger_word_count=2)
+        f = SlideFollower(mock_pro, trigger_word_count=2, trigger_index=-1)
         _mock_slide_text(mock_pro, "how sweet the sound")
         f.refresh()
         assert f.matches("the sound")

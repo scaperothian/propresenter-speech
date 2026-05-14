@@ -77,10 +77,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     mode_grp.add_argument(
         "--trigger-words",
         type=int,
-        default=1,
+        default=2,
         dest="trigger_words",
         metavar="N",
-        help="(follow mode) number of words from the end of the slide text to use as trigger",
+        help="(follow mode) number of words to use as trigger phrase",
+    )
+    mode_grp.add_argument(
+        "--trigger-index",
+        type=int,
+        default=-2,
+        dest="trigger_index",
+        metavar="I",
+        help="(follow mode) pythonic index of the anchor (last) trigger word; -2 = second-to-last word (default)",
     )
     mode_grp.add_argument(
         "--context-words",
@@ -263,7 +271,7 @@ def main() -> None:
         handler = FollowHandler(
             pro_controller=pro,
             command_parser=CommandParser(),
-            slide_follower=SlideFollower(pro, trigger_word_count=args.trigger_words),
+            slide_follower=SlideFollower(pro, trigger_word_count=args.trigger_words, trigger_index=args.trigger_index),
             verbose=args.verbose,
         )
     else:

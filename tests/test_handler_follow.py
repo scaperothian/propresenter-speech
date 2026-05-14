@@ -113,7 +113,7 @@ class TestExplicitCommands:
         h.command_parser.parse.return_value = Command(CommandType.PREVIOUS_SLIDE)
         h.pro_controller.previous_slide.return_value = True
         h.on_transcription("previous slide", _buf())
-        h.slide_follower.refresh.assert_called_once()
+        h.slide_follower.refresh_after_advance.assert_called_once_with(delta=-1)
 
     def test_go_to_slide_command(self):
         h = _make_handler()
@@ -121,7 +121,7 @@ class TestExplicitCommands:
         h.pro_controller.go_to_slide.return_value = True
         h.on_transcription("go to slide three", _buf())
         h.pro_controller.go_to_slide.assert_called_once_with(3)
-        h.slide_follower.refresh.assert_called_once()
+        h.slide_follower.refresh_to_slide.assert_called_once_with(2)
 
 
 class TestOnStartup:

@@ -81,7 +81,7 @@ class TestFollowModeTriggerOrder:
 
     def test_initial_trigger_is_first_slide_last_word(self):
         fake_pro = FakeProPresenter()
-        follower = SlideFollower(fake_pro, trigger_word_count=1)
+        follower = SlideFollower(fake_pro, trigger_word_count=1, trigger_index=-1)
         ok, reason = follower.validate()
         assert ok, reason
         follower.refresh()
@@ -89,7 +89,7 @@ class TestFollowModeTriggerOrder:
 
     def test_sequential_advances_yield_correct_triggers(self):
         fake_pro = FakeProPresenter()
-        follower = SlideFollower(fake_pro, trigger_word_count=1)
+        follower = SlideFollower(fake_pro, trigger_word_count=1, trigger_index=-1)
         ok, _ = follower.validate()
         assert ok
         follower.refresh()
@@ -104,7 +104,7 @@ class TestFollowModeTriggerOrder:
 
     def test_refresh_after_advance_past_end_clears_triggers(self):
         fake_pro = FakeProPresenter()
-        follower = SlideFollower(fake_pro, trigger_word_count=1)
+        follower = SlideFollower(fake_pro, trigger_word_count=1, trigger_index=-1)
         ok, _ = follower.validate()
         assert ok
         follower.refresh()
@@ -122,7 +122,7 @@ class TestFollowModeTriggerOrder:
 
     def test_two_word_trigger_uses_last_two_words(self):
         fake_pro = FakeProPresenter()
-        follower = SlideFollower(fake_pro, trigger_word_count=2)
+        follower = SlideFollower(fake_pro, trigger_word_count=2, trigger_index=-1)
         ok, _ = follower.validate()
         assert ok
         follower.refresh()
@@ -135,7 +135,7 @@ class TestFollowModeTriggerOrder:
         import unittest.mock as mock
         fake_pro.get_slide_index = mock.MagicMock(return_value=0)
 
-        follower = SlideFollower(fake_pro, trigger_word_count=1)
+        follower = SlideFollower(fake_pro, trigger_word_count=1, trigger_index=-1)
         follower.validate()
         follower.refresh()
         call_count_after_refresh = fake_pro.get_slide_index.call_count

@@ -53,7 +53,6 @@ class FollowHandler:
                 return
             self._execute(command)
             self._last_advance = time.monotonic()
-            self.slide_follower.refresh()
             if self.slide_follower.has_triggers and self.verbose:
                 print(f"  trigger words: {self.slide_follower.trigger_words}")
             return
@@ -81,12 +80,18 @@ class FollowHandler:
         if command.type == CommandType.NEXT_SLIDE:
             ok = self.pro_controller.next_slide()
             print("→ Next slide" if ok else "✗ Failed: next slide")
+            if ok:
+                self.slide_follower.refresh_after_advance(delta=1)
 
         elif command.type == CommandType.PREVIOUS_SLIDE:
             ok = self.pro_controller.previous_slide()
             print("← Previous slide" if ok else "✗ Failed: previous slide")
+            if ok:
+                self.slide_follower.refresh_after_advance(delta=-1)
 
         elif command.type == CommandType.GO_TO_SLIDE:
             n = command.slide_number
             ok = self.pro_controller.go_to_slide(n)
             print(f"→ Slide {n}" if ok else f"✗ Failed: go to slide {n}")
+            if ok:
+                self.slide_follower.refresh_to_slide(n - 1)

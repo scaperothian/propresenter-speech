@@ -18,9 +18,9 @@ ProPresenter HTTP API to advance, retreat, or jump to a specific slide.
 | Mode enum | `src/propresenter_speech/modes.py` | `Mode.PRESENTATION` / `Mode.FOLLOW` / `Mode.FOLLOW_ENHANCED` |
 | Mode handler protocol | `src/propresenter_speech/handlers/base.py` | `ModeHandler` Protocol — `on_startup()`, `startup_description()`, `on_transcription()` |
 | Presentation mode | `src/propresenter_speech/handlers/presentation.py` | `PresentationHandler` — parses explicit voice commands only |
-| Follow mode | `src/propresenter_speech/handlers/follow.py` | `FollowHandler` — explicit commands + trigger-word auto-advance via `SlideFollower`; cooldown prevents double-advance on overlapping windows |
+| Follow mode | `src/propresenter_speech/handlers/follow.py` | `FollowHandler` — explicit commands + trigger-word auto-advance via `SlideFollower`; cooldown prevents double-advance on overlapping windows; explicit commands use `refresh_after_advance`/`refresh_to_slide` to avoid API race condition |
 | Follow-enhanced mode | `src/propresenter_speech/handlers/follow_enhanced.py` | `FollowEnhancedHandler` — semantic cosine-similarity match via `SlideEmbedder`; jumps to best-matching slide freely |
-| Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text from ProPresenter API, extracts trigger words, `refresh_after_advance()` avoids race with API propagation delay |
+| Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text, extracts trigger phrase via `--trigger-index` / `--trigger-words`; `refresh_after_advance()` and `refresh_to_slide()` avoid race with API propagation delay |
 | Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — dense cosine similarity over sentence-transformers all-MiniLM-L6-v2 embeddings; `find_slide_with_margin()` returns `(index, score, margin)` |
 | CLI entry point | `src/propresenter_speech/main.py` | argparse, builds handler + `AudioPipeline`, calls `.run()` |
 | ProPresenter HTTP client | `../propresenter-slides/src/propresenter_slides/main.py` | imported via path dependency |
@@ -40,8 +40,8 @@ poetry install
 
 # Verify ProPresenter is running locally on port 1025, then:
 poetry run propresenter-speech                          # presentation mode (default)
-poetry run propresenter-speech --mode follow            # follow mode
-poetry run propresenter-speech --mode follow --trigger-words 2  # use last 2 words as trigger
+poetry run propresenter-speech --mode follow            # follow mode (default: 2-word phrase ending at second-to-last word)
+poetry run propresenter-speech --mode follow --trigger-index=-1 --trigger-words=1  # trigger on last word only
 poetry run propresenter-speech --mode follow-enhanced   # semantic embedding mode
 
 # Common flags
@@ -107,9 +107,11 @@ inside `Transcriber.load()`).
      the zero-based index of the active slide.
    - `find_slides(details)[index]["text"]` — reads the slide text directly.
    - Falls back to `GET /v1/status/slide` + recursive text search on any failure.
-3. The last N words of the slide text (default 1, `--trigger-words`) become the
-   trigger.  Each transcribed segment is checked against both `CommandParser` **and**
-   `SlideFollower.matches()`.  An explicit command always takes priority.
+3. `--trigger-index` (default `-2`, second-to-last word) sets the anchor position
+   within the slide text; `--trigger-words` (default `2`) sets how many consecutive
+   words ending at that position form the trigger phrase.  Each transcribed segment is
+   checked against both `CommandParser` **and** `SlideFollower.matches()`.  An explicit
+   command always takes priority.
 4. On a trigger match, `FollowHandler.on_transcription()` loops: it calls
    `next_slide()` then `SlideFollower.refresh_after_advance()` which increments the
    locally cached slide index **without** calling `GET /v1/presentation/slide_index`

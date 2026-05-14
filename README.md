@@ -101,7 +101,9 @@ Operation mode:
                         presentation: explicit commands only (default)
                         follow: auto-advance on slide trigger words + explicit commands
                         follow-enhanced: semantic embedding search — cues whichever slide best matches recent speech
-  --trigger-words N     (follow mode) words from end of slide text to use as trigger (default: 1)
+  --trigger-words N     (follow mode) number of words in the trigger phrase (default: 2)
+  --trigger-index I     (follow mode) pythonic index of the anchor trigger word;
+                        -2 = second-to-last word (default), -1 = last word
   --context-words N     (follow-enhanced) recent spoken words used to form the query n-gram (default: 3)
   --similarity-threshold FLOAT
                         (follow-enhanced) minimum hybrid score to trigger a slide cue (default: 0.4)
@@ -139,8 +141,8 @@ poetry run propresenter-speech --presentation "How Great Thou Art" --library Son
 # Activate a presentation and use follow mode
 poetry run propresenter-speech --presentation "Sermon Slides" --mode follow
 
-# Follow mode using the last 2 words as trigger (fewer false positives)
-poetry run propresenter-speech --mode follow --trigger-words 2
+# Follow mode — trigger on the last word only (override default second-to-last, 2-word phrase)
+poetry run propresenter-speech --mode follow --trigger-index=-1 --trigger-words=1
 
 # Follow-enhanced mode — semantic slide matching from active presentation
 poetry run propresenter-speech --mode follow-enhanced

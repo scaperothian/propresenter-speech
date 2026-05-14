@@ -50,10 +50,12 @@ class SlideFollower:
     def __init__(
         self,
         pro_controller: ProPresenterController,
-        trigger_word_count: int = 1,
+        trigger_word_count: int = 2,
+        trigger_index: int = -2,
     ):
         self._controller = pro_controller
         self._trigger_word_count = trigger_word_count
+        self._trigger_index = trigger_index
         self._trigger_words: list[str] = []
         self._presentation_uuid: str | None = None
         self._presentation_details: dict | None = None
@@ -66,6 +68,10 @@ class SlideFollower:
     @property
     def has_triggers(self) -> bool:
         return bool(self._trigger_words)
+
+    @property
+    def current_slide_index(self) -> int | None:
+        return self._slide_index
 
     def refresh(self) -> bool:
         """
@@ -85,7 +91,7 @@ class SlideFollower:
             self._trigger_words = []
             return False
 
-        self._trigger_words = words[-self._trigger_word_count:]
+        self._trigger_words = self._slice_trigger_words(words)
         logger.info("Trigger words updated: %s", self._trigger_words)
         return True
 
@@ -185,11 +191,12 @@ class SlideFollower:
 
     def refresh_after_advance(self, delta: int = 1) -> bool:
         """
-        Update trigger words for the slide *delta* positions ahead of the cached index.
+        Update trigger words for the slide *delta* positions from the cached index.
 
         Avoids calling ``get_slide_index()`` again (which may still return the
         pre-advance value due to API propagation delay).  Falls back to a full
-        ``refresh()`` when no cached index is available.
+        ``refresh()`` when no cached index is available or the target is out of
+        range (e.g. previous-slide at the beginning of the presentation).
 
         Returns True if trigger words were updated, False when the end of the
         presentation has been reached (trigger words are cleared).
@@ -199,6 +206,8 @@ class SlideFollower:
 
         next_index = self._slide_index + delta
         slides = self._controller.find_slides(self._presentation_details)
+        if next_index < 0:
+            return self.refresh()
         if next_index >= len(slides):
             self._trigger_words = []
             logger.info("End of presentation reached — no more trigger words.")
@@ -213,9 +222,44 @@ class SlideFollower:
             return self.refresh()
 
         self._slide_index = next_index
-        self._trigger_words = words[-self._trigger_word_count:]
+        self._trigger_words = self._slice_trigger_words(words)
         logger.info("Trigger words updated: %s", self._trigger_words)
         return True
+
+    def refresh_to_slide(self, index: int) -> bool:
+        """
+        Update trigger words for the slide at the given absolute 0-based index.
+
+        Used after explicit 'go to slide N' commands to avoid the API race
+        condition (the index is known from the command, not re-queried).
+        Falls back to refresh() when presentation details are not cached.
+        """
+        if self._presentation_details is None:
+            return self.refresh()
+
+        slides = self._controller.find_slides(self._presentation_details)
+        if index < 0 or index >= len(slides):
+            return self.refresh()
+
+        text = self._text_at_index(index)
+        if not text:
+            return self.refresh()
+
+        words = extract_words(text)
+        if not words:
+            return self.refresh()
+
+        self._slide_index = index
+        self._trigger_words = self._slice_trigger_words(words)
+        logger.info("Trigger words updated: %s", self._trigger_words)
+        return True
+
+    def _slice_trigger_words(self, words: list[str]) -> list[str]:
+        n = len(words)
+        idx = self._trigger_index if self._trigger_index >= 0 else n + self._trigger_index
+        end = idx + 1
+        start = max(0, end - self._trigger_word_count)
+        return words[start:end]
 
     def _status_fallback(self) -> str:
         status = self._controller.get_status()

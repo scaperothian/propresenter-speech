@@ -9,13 +9,12 @@ Run with:
   poetry run pytest tests/test_integration_follow.py -v
 """
 
-import threading
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from propresenter_speech.audio_capture import AudioFileCapture
+from propresenter_speech.audio_pipeline import _resample, SAMPLE_RATE
 from propresenter_speech.slide_follower import SlideFollower
 from propresenter_speech.transcriber import Transcriber
 
@@ -82,7 +81,7 @@ class TestFollowModeTriggerOrder:
 
     def test_initial_trigger_is_first_slide_last_word(self):
         fake_pro = FakeProPresenter()
-        follower = SlideFollower(fake_pro, trigger_word_count=1)
+        follower = SlideFollower(fake_pro, trigger_word_count=1, trigger_index=-1)
         ok, reason = follower.validate()
         assert ok, reason
         follower.refresh()
@@ -90,7 +89,7 @@ class TestFollowModeTriggerOrder:
 
     def test_sequential_advances_yield_correct_triggers(self):
         fake_pro = FakeProPresenter()
-        follower = SlideFollower(fake_pro, trigger_word_count=1)
+        follower = SlideFollower(fake_pro, trigger_word_count=1, trigger_index=-1)
         ok, _ = follower.validate()
         assert ok
         follower.refresh()
@@ -105,7 +104,7 @@ class TestFollowModeTriggerOrder:
 
     def test_refresh_after_advance_past_end_clears_triggers(self):
         fake_pro = FakeProPresenter()
-        follower = SlideFollower(fake_pro, trigger_word_count=1)
+        follower = SlideFollower(fake_pro, trigger_word_count=1, trigger_index=-1)
         ok, _ = follower.validate()
         assert ok
         follower.refresh()
@@ -123,7 +122,7 @@ class TestFollowModeTriggerOrder:
 
     def test_two_word_trigger_uses_last_two_words(self):
         fake_pro = FakeProPresenter()
-        follower = SlideFollower(fake_pro, trigger_word_count=2)
+        follower = SlideFollower(fake_pro, trigger_word_count=2, trigger_index=-1)
         ok, _ = follower.validate()
         assert ok
         follower.refresh()
@@ -136,7 +135,7 @@ class TestFollowModeTriggerOrder:
         import unittest.mock as mock
         fake_pro.get_slide_index = mock.MagicMock(return_value=0)
 
-        follower = SlideFollower(fake_pro, trigger_word_count=1)
+        follower = SlideFollower(fake_pro, trigger_word_count=1, trigger_index=-1)
         follower.validate()
         follower.refresh()
         call_count_after_refresh = fake_pro.get_slide_index.call_count
@@ -173,11 +172,18 @@ class TestFollowModeAudio:
 
     @pytest.fixture(scope="class")
     def audio_segments(self) -> list[np.ndarray]:
-        segments: list[np.ndarray] = []
-        capture = AudioFileCapture(file_path=str(AUDIO_FILE))
-        capture.start(lambda seg: segments.append(seg))
-        capture._thread.join(timeout=30)
-        return segments
+        import soundfile as sf
+        audio, sr = sf.read(str(AUDIO_FILE), dtype="float32", always_2d=False)
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        if sr != SAMPLE_RATE:
+            audio = _resample(audio, sr, SAMPLE_RATE)
+        window = SAMPLE_RATE * 2  # 2-second chunks
+        return [
+            audio[i : i + window]
+            for i in range(0, len(audio), window)
+            if len(audio[i : i + window]) >= SAMPLE_RATE // 2
+        ]
 
     def _run_follow(self, transcriber: Transcriber, segments: list[np.ndarray]) -> FakeProPresenter:
         fake_pro = FakeProPresenter()

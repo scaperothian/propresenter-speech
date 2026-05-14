@@ -14,13 +14,15 @@ ProPresenter HTTP API to advance, retreat, or jump to a specific slide.
 |---------|--------|-------|
 | Whisper transcription | `src/propresenter_speech/transcriber.py` | lazy-loads via faster-whisper; no PyTorch; models from HuggingFace |
 | Command parsing | `src/propresenter_speech/command_parser.py` | pure Python, no I/O |
-| Audio capture / VAD | `src/propresenter_speech/audio_capture.py` | `AudioCapture` (mic) and `AudioFileCapture` (WAV/FLAC/OGG); energy-based VAD |
+| Shared audio pipeline | `src/propresenter_speech/audio_pipeline.py` | `AudioPipeline` — ring-buffer mic capture OR file chunking; polls Whisper on a timer; calls `ModeHandler.on_transcription()` |
 | Mode enum | `src/propresenter_speech/modes.py` | `Mode.PRESENTATION` / `Mode.FOLLOW` / `Mode.FOLLOW_ENHANCED` |
-| Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text, extracts trigger words |
+| Mode handler protocol | `src/propresenter_speech/handlers/base.py` | `ModeHandler` Protocol — `on_startup()`, `startup_description()`, `on_transcription()` |
+| Presentation mode | `src/propresenter_speech/handlers/presentation.py` | `PresentationHandler` — parses explicit voice commands only |
+| Follow mode | `src/propresenter_speech/handlers/follow.py` | `FollowHandler` — explicit commands + trigger-word auto-advance via `SlideFollower`; cooldown prevents double-advance on overlapping windows; explicit commands use `refresh_after_advance`/`refresh_to_slide` to avoid API race condition |
+| Follow-enhanced mode | `src/propresenter_speech/handlers/follow_enhanced.py` | `FollowEnhancedHandler` — semantic cosine-similarity match via `SlideEmbedder`; jumps to best-matching slide freely |
+| Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text, extracts trigger phrase via `--trigger-index` / `--trigger-words`; `refresh_after_advance()` and `refresh_to_slide()` avoid race with API propagation delay |
 | Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — dense cosine similarity over sentence-transformers all-MiniLM-L6-v2 embeddings; `find_slide_with_margin()` returns `(index, score, margin)` |
-| Follow-enhanced controller | `src/propresenter_speech/follow_enhanced_controller.py` | `FollowEnhancedController` — ring-buffer audio, polls Whisper every `poll_interval` s, cues best-matching slide via `go_to_slide()` |
-| Pipeline orchestration | `src/propresenter_speech/speech_controller.py` | mode-aware dispatch for `presentation` / `follow`; wires all components |
-| CLI entry point | `src/propresenter_speech/main.py` | argparse, calls `SpeechController.run()` or `FollowEnhancedController.run()` |
+| CLI entry point | `src/propresenter_speech/main.py` | argparse, builds handler + `AudioPipeline`, calls `.run()` |
 | ProPresenter HTTP client | `../propresenter-slides/src/propresenter_slides/main.py` | imported via path dependency |
 
 ## Project conventions
@@ -38,16 +40,18 @@ poetry install
 
 # Verify ProPresenter is running locally on port 1025, then:
 poetry run propresenter-speech                          # presentation mode (default)
-poetry run propresenter-speech --mode follow            # follow mode
-poetry run propresenter-speech --mode follow --trigger-words 2  # use last 2 words as trigger
+poetry run propresenter-speech --mode follow            # follow mode (default: 2-word phrase ending at second-to-last word)
+poetry run propresenter-speech --mode follow --trigger-index=-1 --trigger-words=1  # trigger on last word only
 poetry run propresenter-speech --mode follow-enhanced   # semantic embedding mode
 
 # Common flags
-poetry run propresenter-speech --model small         # better accuracy
-poetry run propresenter-speech --verbose             # print transcriptions + trigger words
-poetry run propresenter-speech --list-devices        # show audio input devices
-poetry run propresenter-speech --device 2            # use device index 2
-poetry run propresenter-speech --host 192.168.1.5    # remote ProPresenter host
+poetry run propresenter-speech --model small            # better accuracy
+poetry run propresenter-speech --verbose                # print transcriptions + match info
+poetry run propresenter-speech --list-devices           # show audio input devices
+poetry run propresenter-speech --device 2               # use device index 2
+poetry run propresenter-speech --host 192.168.1.5       # remote ProPresenter host
+poetry run propresenter-speech --window-seconds 3.0     # longer audio context for Whisper
+poetry run propresenter-speech --poll-interval 0.1      # faster response
 poetry run propresenter-speech --audio-file audio/pledge_of_allegiance.wav  # process file instead of mic
 ```
 
@@ -74,18 +78,18 @@ inside `Transcriber.load()`).
 
 1. Add regex patterns to the appropriate `_*_PATTERNS` list in
    `command_parser.py` (or create a new `CommandType` variant).
-2. Handle the new `CommandType` in `SpeechController._execute()`.
-3. Add unit tests in `tests/test_command_parser.py` and
-   `tests/test_speech_controller.py`.
+2. Handle the new `CommandType` in the relevant handler's `_execute()` method
+   (`PresentationHandler`, `FollowHandler`, or both).
+3. Add unit tests in `tests/test_command_parser.py` and the relevant handler test module.
 
 ## Adding new modes
 
 1. Add a new value to the `Mode` enum in `modes.py`.
-2. Add the mode choice to `--mode` in `main.py` and wire up any new
-   dependencies (e.g. a new controller class analogous to `SlideFollower` or `FollowEnhancedController`).
-3. If the mode uses `SpeechController`, branch on the new `Mode` value in `SpeechController._handle_segment()`.
-   If it has its own run-loop (like `follow-enhanced`), dispatch from `main()` before `SpeechController` is built.
-4. Add tests in `test_speech_controller.py` or a dedicated test module.
+2. Create `src/propresenter_speech/handlers/<mode_name>.py` implementing the `ModeHandler` protocol
+   (`on_startup`, `startup_description`, `on_transcription`).
+3. Export the new class from `handlers/__init__.py`.
+4. Add the mode choice to `--mode` in `main.py` and wire the handler into the dispatch block.
+5. Add tests in `tests/test_handler_<mode_name>.py`.
 
 ## Follow mode — how it works
 
@@ -103,10 +107,12 @@ inside `Transcriber.load()`).
      the zero-based index of the active slide.
    - `find_slides(details)[index]["text"]` — reads the slide text directly.
    - Falls back to `GET /v1/status/slide` + recursive text search on any failure.
-3. The last N words of the slide text (default 1, `--trigger-words`) become the
-   trigger.  Each transcribed segment is checked against both `CommandParser` **and**
-   `SlideFollower.matches()`.  An explicit command always takes priority.
-4. On a trigger match, `SpeechController._handle_follow()` loops: it calls
+3. `--trigger-index` (default `-2`, second-to-last word) sets the anchor position
+   within the slide text; `--trigger-words` (default `2`) sets how many consecutive
+   words ending at that position form the trigger phrase.  Each transcribed segment is
+   checked against both `CommandParser` **and** `SlideFollower.matches()`.  An explicit
+   command always takes priority.
+4. On a trigger match, `FollowHandler.on_transcription()` loops: it calls
    `next_slide()` then `SlideFollower.refresh_after_advance()` which increments the
    locally cached slide index **without** calling `GET /v1/presentation/slide_index`
    again.  This avoids the race condition where the API still returns the pre-advance
@@ -115,6 +121,8 @@ inside `Transcriber.load()`).
    through multiple slides).  The loop exits when the end of the presentation is
    reached (triggers cleared) or the next slide's text no longer matches.
    On an explicit command, a plain `SlideFollower.refresh()` is used instead.
+   A `COMMAND_COOLDOWN` (imported from `audio_pipeline`) prevents the overlapping
+   rolling window from re-triggering the same command or advance.
 
 `ProPresenterController` (in `propresenter-slides`) owns all knowledge of the API
 response shape: `get_active_presentation_uuid()` and `_extract_uuid()` parse the
@@ -123,22 +131,13 @@ wraps `GET /v1/presentation/slide_index`.
 
 ProPresenter API reference: `http://<propresenter-ip>:1025/v1/doc/index.html#`
 
-## Audio tuning
-
-If Whisper is triggering on background noise:
-- Raise `--silence-threshold` (e.g. `0.02`–`0.05`).
-- Increase `--silence-duration` to require a longer pause before a segment is sent.
-
-If commands are being cut off mid-utterance:
-- Lower `--silence-duration` slightly (e.g. `0.5`).
-
 ## Follow-enhanced mode — how it works
 
-`FollowEnhancedController` runs an independent loop — it does **not** go through `SpeechController`.
+`FollowEnhancedHandler` runs through the shared `AudioPipeline` like all other modes.
 
-1. **Startup** — `main.py:_run_follow_enhanced()` fetches all slides from the active presentation,
-   filters to those with text, calls `SlideEmbedder.build()` to compute dense embeddings,
-   then loads Whisper before starting the controller.
+1. **Startup** — `main.py:_build_follow_enhanced_handler()` fetches all slides from the active
+   presentation, filters to those with text, calls `SlideEmbedder.build()` to compute dense
+   embeddings, then returns the handler.  Whisper is loaded by `main()` before `AudioPipeline.run()`.
 2. **Ring buffer** — a `sounddevice.InputStream` fills a `collections.deque` capped at
    `window_seconds × SAMPLE_RATE` frames.  Each audio block is appended in the stream callback.
 3. **Poll loop** — a background thread wakes every `poll_interval` seconds.  If Whisper is not
@@ -152,6 +151,16 @@ If commands are being cut off mid-utterance:
    - the result is a different slide from the currently cued one
    `ProPresenterController.go_to_slide(slide_idx + 1)` is called directly; explicit voice commands
    are **not** parsed in this mode.
+
+## Audio tuning
+
+If Whisper is triggering on background noise:
+- Use a directional or headset microphone.
+- Increase `--window-seconds` so Whisper has more context and is less sensitive to brief noise bursts.
+
+If commands lag or are missed:
+- Lower `--poll-interval` (e.g. `0.1`) for faster Whisper polling.
+- Lower `--window-seconds` (e.g. `1.0`) for a shorter, more focused context window.
 
 ## Planned future modes
 

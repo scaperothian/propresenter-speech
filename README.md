@@ -101,15 +101,14 @@ Operation mode:
                         presentation: explicit commands only (default)
                         follow: auto-advance on slide trigger words + explicit commands
                         follow-enhanced: semantic embedding search — cues whichever slide best matches recent speech
-  --trigger-words N     (follow mode) words from end of slide text to use as trigger (default: 1)
+  --trigger-words N     (follow mode) number of words in the trigger phrase (default: 2)
+  --trigger-index I     (follow mode) pythonic index of the anchor trigger word;
+                        -2 = second-to-last word (default), -1 = last word
   --context-words N     (follow-enhanced) recent spoken words used to form the query n-gram (default: 3)
   --similarity-threshold FLOAT
                         (follow-enhanced) minimum hybrid score to trigger a slide cue (default: 0.4)
   --min-margin FLOAT    (follow-enhanced) minimum gap between best and second-best score to trigger
                         even when below --similarity-threshold (default: 0.15)
-  --window-seconds SECS (follow-enhanced) rolling audio window length in seconds (default: 2.0)
-  --poll-interval SECS  (follow-enhanced) seconds between Whisper inference calls (default: 0.2)
-
 
 Whisper ASR:
   --model {tiny,base,small,medium,large}
@@ -117,10 +116,10 @@ Whisper ASR:
                         tiny < base < small < medium < large
                         Smaller = faster; larger = more accurate
 
-Audio capture:
+Audio pipeline:
   --device DEVICE       Input device index; see --list-devices (default: system default)
-  --silence-threshold   RMS energy threshold 0–1 for speech vs. silence (default: 0.01)
-  --silence-duration    Seconds of silence to close a speech segment (default: 0.8)
+  --window-seconds SECS Rolling audio window length fed to Whisper, all modes (default: 2.0)
+  --poll-interval SECS  Seconds between Whisper inference calls, all modes (default: 0.2)
   --list-devices        Print available input devices and exit
   --audio-file PATH     Process a WAV/FLAC/OGG file instead of the microphone
                         (resampled to 16 kHz automatically; program idles when done)
@@ -142,8 +141,8 @@ poetry run propresenter-speech --presentation "How Great Thou Art" --library Son
 # Activate a presentation and use follow mode
 poetry run propresenter-speech --presentation "Sermon Slides" --mode follow
 
-# Follow mode using the last 2 words as trigger (fewer false positives)
-poetry run propresenter-speech --mode follow --trigger-words 2
+# Follow mode — trigger on the last word only (override default second-to-last, 2-word phrase)
+poetry run propresenter-speech --mode follow --trigger-index=-1 --trigger-words=1
 
 # Follow-enhanced mode — semantic slide matching from active presentation
 poetry run propresenter-speech --mode follow-enhanced
@@ -164,8 +163,8 @@ poetry run propresenter-speech --device 2
 # Connect to ProPresenter on another machine
 poetry run propresenter-speech --host 192.168.1.10
 
-# Reduce false positives in a noisy room
-poetry run propresenter-speech --silence-threshold 0.03
+# Reduce false positives in a noisy room (longer window gives Whisper more context)
+poetry run propresenter-speech --window-seconds 3.0
 ```
 
 ---
@@ -174,48 +173,27 @@ poetry run propresenter-speech --silence-threshold 0.03
 
 **`presentation` / `follow` pipeline:**
 
+All three modes share a single `AudioPipeline` (ring buffer + Whisper polling). Mode logic lives exclusively in a `ModeHandler` class.
+
 ```
-Microphone
+Microphone (or audio file)
     │
     ▼
-AudioCapture          (sounddevice — 100 ms chunks, energy VAD)
-    │  speech segments (numpy float32 arrays)
+AudioPipeline          (sounddevice ring buffer, poll every --poll-interval s)
+    │  text + rolling word buffer
     ▼
-Transcriber           (faster-whisper — base model by default)
-    │  transcribed text
-    ▼
-SpeechController  ── mode-aware dispatch ──────────────────────────┐
-    │                                                               │
-    │  presentation mode                                      follow mode
-    │  (explicit commands only)               (trigger words + explicit commands)
-    ▼                                                               │
-CommandParser                                               SlideFollower
-    │  Command(type, slide_number)               (caches presentation details;
-    ▼                                             gets slide index each refresh;
-ProPresenterController  (HTTP GET to ProPresenter Network API)      reads slide["text"] directly)
-```
-
-**`follow-enhanced` pipeline:**
-
-```
-Microphone
+ModeHandler.on_transcription()
     │
-    ▼
-sounddevice InputStream  →  ring buffer (rolling WINDOW_SECONDS of PCM)
-                                  │
-                           timer thread (every POLL_INTERVAL s, when Whisper is free)
-                                  │   audio snapshot
-                                  ▼
-                              Transcriber (Whisper)
-                                  │   text → rolling word deque
-                                  ▼
-                              SlideEmbedder.find_slide_with_margin()
-                                  │   (slide_index, confidence, margin)
-                                  ▼
-                              ProPresenterController.go_to_slide()  ← only on new match
+    ├── PresentationHandler  →  CommandParser  →  ProPresenterController
+    │
+    ├── FollowHandler        →  CommandParser + SlideFollower  →  ProPresenterController
+    │                           (SlideFollower caches presentation details,
+    │                            tracks slide index, extracts trigger words)
+    │
+    └── FollowEnhancedHandler →  SlideEmbedder.find_slide_with_margin()  →  ProPresenterController
+                                 (cosine similarity over all-MiniLM-L6-v2 embeddings,
+                                  built at startup from active presentation slides)
 ```
-
-`SlideEmbedder` builds dense cosine-similarity scores over `all-MiniLM-L6-v2` embeddings at startup. Slide indices are preserved so slides without text are skipped cleanly.
 
 **Follow mode slide-text flow (per `refresh()`):**
 
@@ -233,8 +211,8 @@ After each auto-advance `refresh_after_advance()` is used instead of `refresh()`
 
 Full ProPresenter API reference: `http://<propresenter-ip>:1025/v1/doc/index.html#`
 
-All components are injected into `SpeechController` — easy to swap (e.g. replace
-`Transcriber` with a web-hosted model, or add new `Mode` variants).
+All components are injected into `AudioPipeline` — easy to swap (e.g. replace
+`Transcriber` with a web-hosted model, or add new `ModeHandler` variants).
 
 ---
 
@@ -257,12 +235,12 @@ poetry run pytest tests/test_command_parser.py -v
 ## Tuning tips
 
 **Whisper triggers on background noise**  
-Raise `--silence-threshold` (try `0.02`–`0.05`).  You can also switch to a
-quieter environment or use a directional/headset microphone.
+Use a directional or headset microphone, or raise `--window-seconds` so Whisper
+gets more context and is less likely to misfire on a short noise burst.
 
-**Commands are cut off** (e.g. "go to slide" fires before you finish)  
-Lower `--silence-duration` slightly (e.g. `0.5`) or raise it to give yourself
-more time (e.g. `1.2`).
+**Commands are cut off or lag**  
+Lower `--poll-interval` (e.g. `0.1`) for faster response, or raise
+`--window-seconds` (e.g. `3.0`) to give Whisper more audio context.
 
 **Whisper is too slow** (noticeable lag)  
 Switch to `--model tiny`.  faster-whisper uses CTranslate2 and int8 quantisation

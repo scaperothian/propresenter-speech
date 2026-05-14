@@ -22,7 +22,7 @@ import logging
 import re
 from typing import Optional
 
-from propresenter_slides.main import ProPresenterController
+from propresenter_client.main import ProPresenterController
 
 logger = logging.getLogger(__name__)
 

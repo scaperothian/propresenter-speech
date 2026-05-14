@@ -22,7 +22,7 @@ Four modes of operation:
 | [Poetry](https://python-poetry.org) | `pip install poetry` or `brew install poetry` |
 | [ffmpeg](https://ffmpeg.org) | Not required for the mic pipeline; only needed if passing audio files directly |
 | ProPresenter 7 | Network API must be enabled: Preferences → Network → Enable Network |
-| `../propresenter-slides` | Sibling directory — the HTTP client library |
+| `../propresenter-client` | Sibling directory — the HTTP client library |
 
 > **Note:** Whisper model weights (~74 MB for `base`) are downloaded automatically on first run
 > from HuggingFace and cached in `~/.cache/huggingface/hub/`.

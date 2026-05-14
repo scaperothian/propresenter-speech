@@ -16,7 +16,7 @@ import logging
 import sys
 from pathlib import Path
 
-from propresenter_slides.main import ProPresenterController
+from propresenter_client.main import ProPresenterController
 
 from .audio_pipeline import (
     AudioPipeline,

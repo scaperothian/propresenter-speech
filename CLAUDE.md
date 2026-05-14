@@ -24,7 +24,7 @@ ProPresenter HTTP API to advance, retreat, or jump to a specific slide.
 | Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text, extracts trigger phrase via `--trigger-index` / `--trigger-words`; `refresh_after_advance()` and `refresh_to_slide()` avoid race with API propagation delay |
 | Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — dense cosine similarity over sentence-transformers all-MiniLM-L6-v2 embeddings; `find_slide_with_margin()` returns `(index, score, margin)` |
 | CLI entry point | `src/propresenter_speech/main.py` | argparse, builds handler + `AudioPipeline`, calls `.run()` |
-| ProPresenter HTTP client | `../propresenter-slides/src/propresenter_slides/main.py` | imported via path dependency |
+| ProPresenter HTTP client | `../propresenter-client/src/propresenter_client/main.py` | imported via path dependency |
 
 ## Project conventions
 
@@ -126,7 +126,7 @@ inside `Transcriber.load()`).
    A `COMMAND_COOLDOWN` (imported from `audio_pipeline`) prevents the overlapping
    rolling window from re-triggering the same command or advance.
 
-`ProPresenterController` (in `propresenter-slides`) owns all knowledge of the API
+`ProPresenterController` (in `propresenter-client`) owns all knowledge of the API
 response shape: `get_active_presentation_uuid()` and `_extract_uuid()` parse the
 UUID; `find_slides()` recursively locates the `"slides"` list; `get_slide_index()`
 wraps `GET /v1/presentation/slide_index`.

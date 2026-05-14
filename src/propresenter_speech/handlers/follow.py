@@ -3,7 +3,7 @@ import sys
 import time
 from collections import deque
 
-from propresenter_slides.main import ProPresenterController
+from propresenter_client.main import ProPresenterController
 
 from ..audio_pipeline import COMMAND_COOLDOWN
 from ..command_parser import Command, CommandParser, CommandType

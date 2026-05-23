@@ -1186,9 +1186,9 @@ dev = ["pre-commit", "tox"]
 testing = ["coverage", "pytest", "pytest-benchmark"]
 
 [[package]]
-name = "propresenter-slides"
+name = "propresenter-client"
 version = "0.1.0"
-description = "Interface with ProPresenter's APIs to cue slides remotely using Python"
+description = "Python client for the ProPresenter REST API"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
@@ -1200,7 +1200,7 @@ requests = "^2.33.1"
 
 [package.source]
 type = "directory"
-url = "../propresenter-slides"
+url = "../propresenter-client"
 
 [[package]]
 name = "protobuf"
@@ -2061,4 +2061,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0"
-content-hash = "2b0e95e3f1a32b0b9d7bde222085c13f610d52a3c436a137cb3a09199cffa40b"
+content-hash = "c6713c07ab0beaff05bdd957c7a92cfbb97bef40300312296b51dff134d2bbc0"

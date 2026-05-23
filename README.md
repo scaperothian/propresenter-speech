@@ -4,12 +4,11 @@ Voice-controlled slide advancement for [ProPresenter](https://renewedvision.com/
 using [Whisper](https://github.com/openai/whisper) ASR via
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper), running on-device.
 
-Four modes of operation:
+Three modes of operation:
 
 - **`presentation` mode** (default) — respond to explicit voice commands: "next slide", "previous slide", "go to slide five".
 - **`follow` mode** — automatically advance when a trigger phrase near the end of the active slide is heard, while also accepting all explicit commands.
 - **`follow-enhanced` mode** — continuously matches recent speech to slide text using sentence-transformer embeddings (all-MiniLM-L6-v2); cues whichever slide best matches what was just said, and can jump forward or backward freely.
-- **`follow-enhanced-plus` mode** — combines both: embedding search runs first and jumps to the best-matching slide when confident; falls back to trigger-word matching for sequential advances when the match is ambiguous. Accepts explicit commands.
 
 ---
 
@@ -22,13 +21,13 @@ Four modes of operation:
 | [Poetry](https://python-poetry.org) | `pip install poetry` or `brew install poetry` |
 | [ffmpeg](https://ffmpeg.org) | Not required for the mic pipeline; only needed if passing audio files directly |
 | ProPresenter 7 | Network API must be enabled: Preferences → Network → Enable Network |
-| `../propresenter-slides` | Sibling directory — the HTTP client library |
+| `../propresenter-client` | Sibling directory — the HTTP client library |
 
 > **Note:** Whisper model weights (~74 MB for `base`) are downloaded automatically on first run
 > from HuggingFace and cached in `~/.cache/huggingface/hub/`.
 >
-> **`follow-enhanced` / `follow-enhanced-plus` note:** The sentence-transformer model (`all-MiniLM-L6-v2`, ~80 MB) is also
-> downloaded automatically on first use of either embedding mode.
+> **`follow-enhanced` note:** The sentence-transformer model (`all-MiniLM-L6-v2`, ~80 MB) is also
+> downloaded automatically on first use.
 
 ---
 
@@ -63,9 +62,6 @@ poetry run propresenter-speech --mode follow
 
 # Follow-enhanced mode — semantic matching against all slides
 poetry run propresenter-speech --mode follow-enhanced
-
-# Follow-enhanced-plus — embedding search + trigger-word fallback
-poetry run propresenter-speech --mode follow-enhanced-plus
 ```
 
 3. Speak into your mic:
@@ -79,7 +75,7 @@ poetry run propresenter-speech --mode follow-enhanced-plus
 | "slide number 12" | Jump to slide 12 | both |
 | "jump to slide 3" | Jump to slide 3 | both |
 | *(last word of slide)* | Auto-advance | follow only |
-| *(any slide text)* | Jump to best-matching slide | follow-enhanced, follow-enhanced-plus |
+| *(any slide text)* | Jump to best-matching slide | follow-enhanced |
 
 Press **Ctrl-C** or type `q` + Enter to stop.
 
@@ -101,18 +97,17 @@ Presentation selection:
   --library NAME        Library to search when --presentation is given (default: Default)
 
 Operation mode:
-  --mode {presentation,follow,follow-enhanced,follow-enhanced-plus}
+  --mode {presentation,follow,follow-enhanced}
                         presentation: explicit commands only (default)
                         follow: auto-advance on slide trigger words + explicit commands
                         follow-enhanced: semantic embedding search — cues whichever slide best matches recent speech
-                        follow-enhanced-plus: embedding search + trigger-word fallback — jumps when confident, advances sequentially when ambiguous
-  --trigger-words N     (follow, follow-enhanced-plus) number of words in the trigger phrase (default: 2)
-  --trigger-index I     (follow, follow-enhanced-plus) pythonic index of the anchor trigger word;
+  --trigger-words N     (follow) number of words in the trigger phrase (default: 2)
+  --trigger-index I     (follow) pythonic index of the anchor trigger word;
                         -2 = second-to-last word (default), -1 = last word
-  --context-words N     (follow-enhanced, follow-enhanced-plus) recent spoken words used to form the query n-gram (default: 3)
+  --context-words N     (follow-enhanced) recent spoken words used to form the query n-gram (default: 3)
   --similarity-threshold FLOAT
-                        (follow-enhanced, follow-enhanced-plus) minimum score to trigger a slide cue (default: 0.4)
-  --min-margin FLOAT    (follow-enhanced, follow-enhanced-plus) minimum gap between best and second-best score
+                        (follow-enhanced) minimum score to trigger a slide cue (default: 0.4)
+  --min-margin FLOAT    (follow-enhanced) minimum gap between best and second-best score
                         to trigger even when below --similarity-threshold (default: 0.15)
 
 Whisper ASR:
@@ -125,9 +120,12 @@ Audio pipeline:
   --device DEVICE       Input device index; see --list-devices (default: system default)
   --window-seconds SECS Rolling audio window length fed to Whisper, all modes (default: 2.0)
   --poll-interval SECS  Seconds between Whisper inference calls, all modes (default: 0.2)
-  --list-devices        Print available input devices and exit
+  --list-devices        Print available input and output audio devices and exit
   --audio-file PATH     Process a WAV/FLAC/OGG file instead of the microphone
-                        (resampled to 16 kHz automatically; program idles when done)
+                        (resampled to 16 kHz automatically; tqdm progress bar shown)
+  --playback            Play the audio file through speakers while processing
+                        (requires --audio-file)
+  --output-device N     Output device index for playback (see --list-devices; default: system default)
 
 Misc:
   --verbose             Print transcriptions and trigger words to stdout
@@ -155,18 +153,24 @@ poetry run propresenter-speech --mode follow-enhanced
 # Follow-enhanced with stricter matching (raise threshold) or more context
 poetry run propresenter-speech --mode follow-enhanced --similarity-threshold 0.55 --context-words 5
 
-# Follow-enhanced-plus — embedding + trigger words (all embedding and trigger flags apply)
-poetry run propresenter-speech --mode follow-enhanced-plus --presentation "Sermon Slides"
-
 # Use a more accurate model
 poetry run propresenter-speech --model small
 
 # Show what Whisper is hearing and which trigger words are active
 poetry run propresenter-speech --mode follow --verbose
 
-# List audio input devices, then use device #2
+# List all input and output audio devices, then use device #2 for input
 poetry run propresenter-speech --list-devices
 poetry run propresenter-speech --device 2
+
+# Process an audio file with tqdm progress bar (silent)
+poetry run propresenter-speech --audio-file audio/sermon.wav --mode follow
+
+# Process an audio file and play it through speakers at the same time
+poetry run propresenter-speech --audio-file audio/sermon.wav --mode follow --playback
+
+# Play through a specific output device
+poetry run propresenter-speech --audio-file audio/sermon.wav --playback --output-device 3
 
 # Connect to ProPresenter on another machine
 poetry run propresenter-speech --host 192.168.1.10
@@ -198,13 +202,9 @@ ModeHandler.on_transcription()
     │                           (SlideFollower caches presentation details,
     │                            tracks slide index, extracts trigger words)
     │
-    ├── FollowEnhancedHandler    →  SlideEmbedder.find_slide_with_margin()  →  ProPresenterController
-    │                               (cosine similarity over all-MiniLM-L6-v2 embeddings,
-    │                                built at startup from active presentation slides)
-    │
-    └── FollowEnhancedPlusHandler → SlideEmbedder (jump when confident)
-                                    + SlideFollower (trigger-word fallback)
-                                    + CommandParser (explicit commands)  →  ProPresenterController
+    └── FollowEnhancedHandler    →  SlideEmbedder.find_slide_with_margin()  →  ProPresenterController
+                                    (cosine similarity over all-MiniLM-L6-v2 embeddings,
+                                     built at startup from active presentation slides)
 ```
 
 **Follow mode slide-text flow (per `refresh()`):**
@@ -278,7 +278,6 @@ for better word-error rate on numbers.
 | `presentation` | No | Yes | No |
 | `follow` | Yes (on trigger words, sequential) | Yes | Yes (exits on startup if unavailable) |
 | `follow-enhanced` | Yes (semantic match, any slide) | No | Yes (builds embeddings at startup) |
-| `follow-enhanced-plus` | Yes (embedding jump or trigger-word advance) | Yes | Yes (embeddings + trigger words at startup) |
 
 ---
 

@@ -14,17 +14,16 @@ ProPresenter HTTP API to advance, retreat, or jump to a specific slide.
 |---------|--------|-------|
 | Whisper transcription | `src/propresenter_speech/transcriber.py` | lazy-loads via faster-whisper; no PyTorch; models from HuggingFace |
 | Command parsing | `src/propresenter_speech/command_parser.py` | pure Python, no I/O |
-| Shared audio pipeline | `src/propresenter_speech/audio_pipeline.py` | `AudioPipeline` — ring-buffer mic capture OR file chunking; polls Whisper on a timer; calls `ModeHandler.on_transcription()` |
-| Mode enum | `src/propresenter_speech/modes.py` | `Mode.PRESENTATION` / `Mode.FOLLOW` / `Mode.FOLLOW_ENHANCED` / `Mode.FOLLOW_ENHANCED_PLUS` |
+| Shared audio pipeline | `src/propresenter_speech/audio_pipeline.py` | `AudioPipeline` — ring-buffer mic capture OR file chunking (tqdm progress bar, optional speaker playback); polls Whisper on a timer; calls `ModeHandler.on_transcription()` |
+| Mode enum | `src/propresenter_speech/modes.py` | `Mode.PRESENTATION` / `Mode.FOLLOW` / `Mode.FOLLOW_ENHANCED` |
 | Mode handler protocol | `src/propresenter_speech/handlers/base.py` | `ModeHandler` Protocol — `on_startup()`, `startup_description()`, `on_transcription()` |
 | Presentation mode | `src/propresenter_speech/handlers/presentation.py` | `PresentationHandler` — parses explicit voice commands only |
 | Follow mode | `src/propresenter_speech/handlers/follow.py` | `FollowHandler` — explicit commands + trigger-word auto-advance via `SlideFollower`; cooldown prevents double-advance on overlapping windows; explicit commands use `refresh_after_advance`/`refresh_to_slide` to avoid API race condition |
 | Follow-enhanced mode | `src/propresenter_speech/handlers/follow_enhanced.py` | `FollowEnhancedHandler` — semantic cosine-similarity match via `SlideEmbedder`; jumps to best-matching slide freely |
-| Follow-enhanced-plus mode | `src/propresenter_speech/handlers/follow_enhanced_plus.py` | `FollowEnhancedPlusHandler` — embedding search first (jump when confident); falls back to trigger-word matching (sequential advance) when ambiguous; accepts explicit commands |
 | Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text, extracts trigger phrase via `--trigger-index` / `--trigger-words`; `refresh_after_advance()` and `refresh_to_slide()` avoid race with API propagation delay |
 | Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — dense cosine similarity over sentence-transformers all-MiniLM-L6-v2 embeddings; `find_slide_with_margin()` returns `(index, score, margin)` |
 | CLI entry point | `src/propresenter_speech/main.py` | argparse, builds handler + `AudioPipeline`, calls `.run()` |
-| ProPresenter HTTP client | `../propresenter-slides/src/propresenter_slides/main.py` | imported via path dependency |
+| ProPresenter HTTP client | `../propresenter-client/src/propresenter_client/main.py` | imported via path dependency |
 
 ## Project conventions
 
@@ -44,17 +43,18 @@ poetry run propresenter-speech                          # presentation mode (def
 poetry run propresenter-speech --mode follow            # follow mode (default: 2-word phrase ending at second-to-last word)
 poetry run propresenter-speech --mode follow --trigger-index=-1 --trigger-words=1  # trigger on last word only
 poetry run propresenter-speech --mode follow-enhanced          # semantic embedding mode
-poetry run propresenter-speech --mode follow-enhanced-plus     # embedding + trigger-word fallback
 
 # Common flags
 poetry run propresenter-speech --model small            # better accuracy
 poetry run propresenter-speech --verbose                # print transcriptions + match info
-poetry run propresenter-speech --list-devices           # show audio input devices
+poetry run propresenter-speech --list-devices           # show all input + output audio devices
 poetry run propresenter-speech --device 2               # use device index 2
 poetry run propresenter-speech --host 192.168.1.5       # remote ProPresenter host
 poetry run propresenter-speech --window-seconds 3.0     # longer audio context for Whisper
 poetry run propresenter-speech --poll-interval 0.1      # faster response
-poetry run propresenter-speech --audio-file audio/pledge_of_allegiance.wav  # process file instead of mic
+poetry run propresenter-speech --audio-file audio/pledge_of_allegiance.wav            # process file (tqdm progress bar)
+poetry run propresenter-speech --audio-file audio/pledge_of_allegiance.wav --playback # process + play through speakers
+poetry run propresenter-speech --audio-file audio/sermon.wav --playback --output-device 3  # specific output device
 ```
 
 ## Running tests
@@ -75,6 +75,12 @@ inside `Transcriber.load()`).
   sequencing; always runs, no external resources.
 - `TestFollowModeAudio` — end-to-end test using `audio/pledge_of_allegiance.wav` and
   Whisper `tiny`; auto-skipped when the audio file is absent.
+
+`tests/test_transcriber_performance.py` measures the Whisper real-time factor (RTF):
+- Loads the real `tiny` and `base` models (no mocking).
+- Reports `avg_ms` and `RTF = transcription_time / audio_duration` per model.
+- `RTF < 1.0` means the pipeline can keep up in real time; `RTF > 1.0` means lag.
+- Run with `poetry run pytest tests/test_transcriber_performance.py -v -s` to see output.
 
 ## Adding new voice commands
 
@@ -126,7 +132,7 @@ inside `Transcriber.load()`).
    A `COMMAND_COOLDOWN` (imported from `audio_pipeline`) prevents the overlapping
    rolling window from re-triggering the same command or advance.
 
-`ProPresenterController` (in `propresenter-slides`) owns all knowledge of the API
+`ProPresenterController` (in `propresenter-client`) owns all knowledge of the API
 response shape: `get_active_presentation_uuid()` and `_extract_uuid()` parse the
 UUID; `find_slides()` recursively locates the `"slides"` list; `get_slide_index()`
 wraps `GET /v1/presentation/slide_index`.
@@ -154,26 +160,6 @@ ProPresenter API reference: `http://<propresenter-ip>:1025/v1/doc/index.html#`
    `ProPresenterController.go_to_slide(slide_idx + 1)` is called directly; explicit voice commands
    are **not** parsed in this mode.
 
-## Follow-enhanced-plus mode — how it works
-
-`FollowEnhancedPlusHandler` combines the embedding search from `follow-enhanced` with
-the trigger-word fallback from `follow`.  It shares the same `AudioPipeline` as all other modes.
-
-1. **Startup** — `main.py:_build_follow_enhanced_plus_handler()` calls `_build_embedder()` (shared
-   with `follow-enhanced`) to build dense embeddings, then constructs a `SlideFollower` for trigger
-   tracking.  Both are available for the duration of the session.
-2. **Per audio window** — after transcription, the last `context_words` words form a query:
-   - `SlideEmbedder.find_slide_with_margin(query)` runs against all slide embeddings.
-   - If the best match is a **different** slide and meets `similarity_threshold` or `min_margin`,
-     the presentation jumps there via `go_to_slide()` and `SlideFollower.refresh_to_slide()` updates
-     the trigger phrase — no API race condition.
-   - Otherwise the handler checks trigger words (`SlideFollower.matches()`).  On a match it calls
-     `next_slide()` and `refresh_after_advance()` for a sequential advance.
-3. **Explicit commands** — parsed by `CommandParser`; handled with `refresh_after_advance()` /
-   `refresh_to_slide()` (same race-condition-safe approach as `follow` mode).
-4. **Audio file mode** — `_run_file()` sleeps for the chunk duration before each Whisper call so
-   that `COMMAND_COOLDOWN` (wall-clock) behaves the same as with a live microphone.
-
 ## Audio tuning
 
 If Whisper is triggering on background noise:
@@ -199,4 +185,3 @@ If commands lag or are missed:
 | `presentation` (default) | Responds to explicit voice commands only |
 | `follow` | Auto-advances on slide trigger words **and** accepts all explicit commands |
 | `follow-enhanced` | Semantic embedding match against all slides; cues whichever slide best matches recent speech; does **not** parse explicit commands |
-| `follow-enhanced-plus` | Embedding search runs first — jumps to best-matching slide when confident; falls back to trigger-word matching for sequential advance when ambiguous; accepts explicit commands |

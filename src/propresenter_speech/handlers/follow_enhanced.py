@@ -6,7 +6,7 @@ DEFAULT_CONTEXT_WORDS = 3
 DEFAULT_SIMILARITY_THRESHOLD = 0.4
 DEFAULT_MIN_MARGIN = 0.15
 
-from propresenter_slides.main import ProPresenterController
+from propresenter_client.main import ProPresenterController
 
 from ..slide_embedder import SlideEmbedder
 

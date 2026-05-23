@@ -15,7 +15,8 @@ numpy = ">=2.4"
 requests = "*"
 word2number = "*"
 sentence-transformers = "^3.0"
-propresenter-slides = {path = "../propresenter-slides", develop = true}
+tqdm = "*"
+propresenter-client = {path = "../propresenter-client", develop = true}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0"

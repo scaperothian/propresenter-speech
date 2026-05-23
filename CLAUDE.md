@@ -14,7 +14,7 @@ ProPresenter HTTP API to advance, retreat, or jump to a specific slide.
 |---------|--------|-------|
 | Whisper transcription | `src/propresenter_speech/transcriber.py` | lazy-loads via faster-whisper; no PyTorch; models from HuggingFace |
 | Command parsing | `src/propresenter_speech/command_parser.py` | pure Python, no I/O |
-| Shared audio pipeline | `src/propresenter_speech/audio_pipeline.py` | `AudioPipeline` — ring-buffer mic capture OR file chunking; polls Whisper on a timer; calls `ModeHandler.on_transcription()` |
+| Shared audio pipeline | `src/propresenter_speech/audio_pipeline.py` | `AudioPipeline` — ring-buffer mic capture OR file chunking (tqdm progress bar, optional speaker playback); polls Whisper on a timer; calls `ModeHandler.on_transcription()` |
 | Mode enum | `src/propresenter_speech/modes.py` | `Mode.PRESENTATION` / `Mode.FOLLOW` / `Mode.FOLLOW_ENHANCED` |
 | Mode handler protocol | `src/propresenter_speech/handlers/base.py` | `ModeHandler` Protocol — `on_startup()`, `startup_description()`, `on_transcription()` |
 | Presentation mode | `src/propresenter_speech/handlers/presentation.py` | `PresentationHandler` — parses explicit voice commands only |
@@ -47,12 +47,14 @@ poetry run propresenter-speech --mode follow-enhanced          # semantic embedd
 # Common flags
 poetry run propresenter-speech --model small            # better accuracy
 poetry run propresenter-speech --verbose                # print transcriptions + match info
-poetry run propresenter-speech --list-devices           # show audio input devices
+poetry run propresenter-speech --list-devices           # show all input + output audio devices
 poetry run propresenter-speech --device 2               # use device index 2
 poetry run propresenter-speech --host 192.168.1.5       # remote ProPresenter host
 poetry run propresenter-speech --window-seconds 3.0     # longer audio context for Whisper
 poetry run propresenter-speech --poll-interval 0.1      # faster response
-poetry run propresenter-speech --audio-file audio/pledge_of_allegiance.wav  # process file instead of mic
+poetry run propresenter-speech --audio-file audio/pledge_of_allegiance.wav            # process file (tqdm progress bar)
+poetry run propresenter-speech --audio-file audio/pledge_of_allegiance.wav --playback # process + play through speakers
+poetry run propresenter-speech --audio-file audio/sermon.wav --playback --output-device 3  # specific output device
 ```
 
 ## Running tests
@@ -73,6 +75,12 @@ inside `Transcriber.load()`).
   sequencing; always runs, no external resources.
 - `TestFollowModeAudio` — end-to-end test using `audio/pledge_of_allegiance.wav` and
   Whisper `tiny`; auto-skipped when the audio file is absent.
+
+`tests/test_transcriber_performance.py` measures the Whisper real-time factor (RTF):
+- Loads the real `tiny` and `base` models (no mocking).
+- Reports `avg_ms` and `RTF = transcription_time / audio_duration` per model.
+- `RTF < 1.0` means the pipeline can keep up in real time; `RTF > 1.0` means lag.
+- Run with `poetry run pytest tests/test_transcriber_performance.py -v -s` to see output.
 
 ## Adding new voice commands
 

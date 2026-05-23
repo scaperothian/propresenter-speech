@@ -120,9 +120,12 @@ Audio pipeline:
   --device DEVICE       Input device index; see --list-devices (default: system default)
   --window-seconds SECS Rolling audio window length fed to Whisper, all modes (default: 2.0)
   --poll-interval SECS  Seconds between Whisper inference calls, all modes (default: 0.2)
-  --list-devices        Print available input devices and exit
+  --list-devices        Print available input and output audio devices and exit
   --audio-file PATH     Process a WAV/FLAC/OGG file instead of the microphone
-                        (resampled to 16 kHz automatically; program idles when done)
+                        (resampled to 16 kHz automatically; tqdm progress bar shown)
+  --playback            Play the audio file through speakers while processing
+                        (requires --audio-file)
+  --output-device N     Output device index for playback (see --list-devices; default: system default)
 
 Misc:
   --verbose             Print transcriptions and trigger words to stdout
@@ -156,9 +159,18 @@ poetry run propresenter-speech --model small
 # Show what Whisper is hearing and which trigger words are active
 poetry run propresenter-speech --mode follow --verbose
 
-# List audio input devices, then use device #2
+# List all input and output audio devices, then use device #2 for input
 poetry run propresenter-speech --list-devices
 poetry run propresenter-speech --device 2
+
+# Process an audio file with tqdm progress bar (silent)
+poetry run propresenter-speech --audio-file audio/sermon.wav --mode follow
+
+# Process an audio file and play it through speakers at the same time
+poetry run propresenter-speech --audio-file audio/sermon.wav --mode follow --playback
+
+# Play through a specific output device
+poetry run propresenter-speech --audio-file audio/sermon.wav --playback --output-device 3
 
 # Connect to ProPresenter on another machine
 poetry run propresenter-speech --host 192.168.1.10

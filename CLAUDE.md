@@ -21,7 +21,7 @@ ProPresenter HTTP API to advance, retreat, or jump to a specific slide.
 | Follow mode | `src/propresenter_speech/handlers/follow.py` | `FollowHandler` — explicit commands + trigger-word auto-advance via `SlideFollower`; cooldown prevents double-advance on overlapping windows; explicit commands use `refresh_after_advance`/`refresh_to_slide` to avoid API race condition |
 | Follow-enhanced mode | `src/propresenter_speech/handlers/follow_enhanced.py` | `FollowEnhancedHandler` — semantic cosine-similarity match via `SlideEmbedder`; jumps to best-matching slide freely |
 | Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text, extracts trigger phrase via `--trigger-index` / `--trigger-words`; `refresh_after_advance()` and `refresh_to_slide()` avoid race with API propagation delay |
-| Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — dense cosine similarity over sentence-transformers all-MiniLM-L6-v2 embeddings; `find_slide_with_margin()` returns `(index, score, margin)` |
+| Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — dense cosine similarity over sentence-transformers all-MiniLM-L6-v2 embeddings; `find_slide_with_margin()` returns `(index, score, margin)`; `avg_words_per_slide` property returns rounded average word count after `build()` |
 | CLI entry point | `src/propresenter_speech/main.py` | argparse, builds handler + `AudioPipeline`, calls `.run()` |
 | ProPresenter HTTP client | `../propresenter-client/src/propresenter_client/main.py` | imported via path dependency |
 
@@ -145,7 +145,10 @@ ProPresenter API reference: `http://<propresenter-ip>:1025/v1/doc/index.html#`
 
 1. **Startup** — `main.py:_build_follow_enhanced_handler()` fetches all slides from the active
    presentation, filters to those with text, calls `SlideEmbedder.build()` to compute dense
-   embeddings, then returns the handler.  Whisper is loaded by `main()` before `AudioPipeline.run()`.
+   embeddings, then auto-computes `context_words` as the average word count per slide
+   (via `SlideEmbedder.avg_words_per_slide`) unless `--context-words` was explicitly passed.
+   This means the query n-gram naturally mirrors how much text is on a typical slide.
+   Whisper is loaded by `main()` before `AudioPipeline.run()`.
 2. **Ring buffer** — a `sounddevice.InputStream` fills a `collections.deque` capped at
    `window_seconds × SAMPLE_RATE` frames.  Each audio block is appended in the stream callback.
 3. **Poll loop** — a background thread wakes every `poll_interval` seconds.  If Whisper is not

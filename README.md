@@ -104,7 +104,8 @@ Operation mode:
   --trigger-words N     (follow) number of words in the trigger phrase (default: 2)
   --trigger-index I     (follow) pythonic index of the anchor trigger word;
                         -2 = second-to-last word (default), -1 = last word
-  --context-words N     (follow-enhanced) recent spoken words used to form the query n-gram (default: 3)
+  --context-words N     (follow-enhanced) recent spoken words used to form the query n-gram
+                        (default: avg words/slide, computed at startup from the loaded presentation)
   --similarity-threshold FLOAT
                         (follow-enhanced) minimum score to trigger a slide cue (default: 0.4)
   --min-margin FLOAT    (follow-enhanced) minimum gap between best and second-best score
@@ -150,8 +151,8 @@ poetry run propresenter-speech --mode follow --trigger-index=-1 --trigger-words=
 # Follow-enhanced mode — semantic slide matching from active presentation
 poetry run propresenter-speech --mode follow-enhanced
 
-# Follow-enhanced with stricter matching (raise threshold) or more context
-poetry run propresenter-speech --mode follow-enhanced --similarity-threshold 0.55 --context-words 5
+# Follow-enhanced with stricter matching or explicit context window override
+poetry run propresenter-speech --mode follow-enhanced --similarity-threshold 0.55 --context-words 8
 
 # Use a more accurate model
 poetry run propresenter-speech --model small

@@ -32,6 +32,7 @@ class SlideEmbedder:
         self._model = None
         self._embeddings: Optional[np.ndarray] = None  # shape (n_slides, dim)
         self._slide_indices: list[int] = []
+        self._slide_texts: list[str] = []
         self._slide_count: int = 0
         self._built = False
 
@@ -63,6 +64,7 @@ class SlideEmbedder:
         )
         if len(self._slide_indices) != len(slide_texts):
             raise ValueError("slide_indices length must match slide_texts length")
+        self._slide_texts = slide_texts
 
         if self._model is None:
             self.load()
@@ -133,3 +135,11 @@ class SlideEmbedder:
     @property
     def slide_count(self) -> int:
         return self._slide_count
+
+    @property
+    def avg_words_per_slide(self) -> int:
+        """Average word count per slide, rounded to nearest int (minimum 1)."""
+        if not self._built or not self._slide_texts:
+            return 3
+        total = sum(len(t.split()) for t in self._slide_texts)
+        return max(1, round(total / len(self._slide_texts)))

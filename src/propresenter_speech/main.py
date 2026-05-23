@@ -28,7 +28,6 @@ from .audio_pipeline import (
 from .command_parser import CommandParser
 from .handlers import FollowEnhancedHandler, FollowHandler, PresentationHandler
 from .handlers.follow_enhanced import (
-    DEFAULT_CONTEXT_WORDS,
     DEFAULT_MIN_MARGIN,
     DEFAULT_SIMILARITY_THRESHOLD,
 )
@@ -98,10 +97,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     mode_grp.add_argument(
         "--context-words",
         type=int,
-        default=DEFAULT_CONTEXT_WORDS,
+        default=None,
         dest="context_words",
         metavar="N",
-        help="(follow-enhanced) recent spoken words to form the query n-gram",
+        help=(
+            "(follow-enhanced) recent spoken words to form the query n-gram\n"
+            "(default: avg words/slide, computed from the loaded presentation)"
+        ),
     )
     mode_grp.add_argument(
         "--similarity-threshold",
@@ -227,10 +229,16 @@ def _build_embedder(pro: ProPresenterController) -> SlideEmbedder:
 
 
 def _build_follow_enhanced_handler(pro: ProPresenterController, args) -> FollowEnhancedHandler:
+    embedder = _build_embedder(pro)
+    if args.context_words is None:
+        context_words = embedder.avg_words_per_slide
+        print(f"Context words: {context_words} (avg words/slide, computed from presentation)")
+    else:
+        context_words = args.context_words
     return FollowEnhancedHandler(
         pro_controller=pro,
-        slide_embedder=_build_embedder(pro),
-        context_words=args.context_words,
+        slide_embedder=embedder,
+        context_words=context_words,
         similarity_threshold=args.similarity_threshold,
         min_margin=args.min_margin,
         verbose=args.verbose,

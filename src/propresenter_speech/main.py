@@ -23,9 +23,10 @@ from .audio_pipeline import (
     DEFAULT_POLL_INTERVAL,
     DEFAULT_WINDOW_SECONDS,
     list_input_devices,
+    list_output_devices,
 )
 from .command_parser import CommandParser
-from .handlers import FollowEnhancedHandler, FollowEnhancedPlusHandler, FollowHandler, PresentationHandler
+from .handlers import FollowEnhancedHandler, FollowHandler, PresentationHandler
 from .handlers.follow_enhanced import (
     DEFAULT_CONTEXT_WORDS,
     DEFAULT_MIN_MARGIN,
@@ -37,11 +38,15 @@ from .slide_follower import SlideFollower
 from .transcriber import Transcriber
 
 
+class _Formatter(argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter):
+    pass
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="propresenter-speech",
         description="Control ProPresenter slides with your voice using Whisper ASR.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        formatter_class=_Formatter,
     )
 
     conn = parser.add_argument_group("ProPresenter connection")
@@ -67,12 +72,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     mode_grp.add_argument(
         "--mode",
         default="presentation",
-        choices=["presentation", "follow", "follow-enhanced", "follow-enhanced-plus"],
+        choices=["presentation", "follow", "follow-enhanced"],
         help=(
-            "presentation: respond to explicit voice commands only. "
-            "follow: also auto-advance when the last word(s) of the active slide are heard. "
-            "follow-enhanced: semantic embedding search — cues whichever slide best matches recent speech. "
-            "follow-enhanced-plus: embedding search + trigger-word fallback — jumps when confident, advances sequentially when ambiguous."
+            "presentation:    respond to explicit voice commands only\n"
+            "follow:          auto-advance on slide trigger words + explicit commands\n"
+            "follow-enhanced: semantic embedding search — cues whichever slide best matches recent speech"
         ),
     )
     mode_grp.add_argument(
@@ -151,7 +155,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--list-devices",
         action="store_true",
         dest="list_devices",
-        help="Print available input audio devices and exit",
+        help="Print available input and output audio devices and exit",
     )
     audio_grp.add_argument(
         "--audio-file",
@@ -159,6 +163,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         dest="audio_file",
         help="Process an audio file instead of the microphone (WAV/FLAC/OGG; resampled to 16 kHz automatically)",
+    )
+    audio_grp.add_argument(
+        "--playback",
+        action="store_true",
+        help="Play the audio file through speakers while processing (requires --audio-file)",
+    )
+    audio_grp.add_argument(
+        "--output-device",
+        type=int,
+        default=None,
+        dest="output_device",
+        help="Output device index for playback (see --list-devices; default: system default)",
     )
 
     parser.add_argument("--verbose", action="store_true", help="Print transcribed text to stdout")
@@ -221,18 +237,6 @@ def _build_follow_enhanced_handler(pro: ProPresenterController, args) -> FollowE
     )
 
 
-def _build_follow_enhanced_plus_handler(pro: ProPresenterController, args) -> FollowEnhancedPlusHandler:
-    return FollowEnhancedPlusHandler(
-        pro_controller=pro,
-        command_parser=CommandParser(),
-        slide_follower=SlideFollower(pro, trigger_word_count=args.trigger_words, trigger_index=args.trigger_index),
-        slide_embedder=_build_embedder(pro),
-        context_words=args.context_words,
-        similarity_threshold=args.similarity_threshold,
-        min_margin=args.min_margin,
-        verbose=args.verbose,
-    )
-
 
 def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)
@@ -249,14 +253,25 @@ def main() -> None:
         sys.exit(1)
 
     if args.list_devices:
-        devices = list_input_devices()
-        if not devices:
-            print("No input audio devices found.")
-        else:
-            print("Available input audio devices:")
-            for d in devices:
+        inputs = list_input_devices()
+        print("Input devices:")
+        if inputs:
+            for d in inputs:
                 print(f"  [{d['index']}] {d['name']}  ({d['channels']} ch)")
+        else:
+            print("  (none found)")
+        outputs = list_output_devices()
+        print("Output devices:")
+        if outputs:
+            for d in outputs:
+                print(f"  [{d['index']}] {d['name']}  ({d['channels']} ch)")
+        else:
+            print("  (none found)")
         sys.exit(0)
+
+    if args.playback and not args.audio_file:
+        print("Error: --playback requires --audio-file.")
+        sys.exit(1)
 
     mode = Mode(args.mode)
 
@@ -285,8 +300,6 @@ def main() -> None:
 
     if mode == Mode.FOLLOW_ENHANCED:
         handler = _build_follow_enhanced_handler(pro, args)
-    elif mode == Mode.FOLLOW_ENHANCED_PLUS:
-        handler = _build_follow_enhanced_plus_handler(pro, args)
     elif mode == Mode.FOLLOW:
         handler = FollowHandler(
             pro_controller=pro,
@@ -314,6 +327,8 @@ def main() -> None:
         window_seconds=args.window_seconds,
         poll_interval=args.poll_interval,
         verbose=args.verbose,
+        playback=args.playback,
+        output_device=args.output_device,
     ).run()
 
 

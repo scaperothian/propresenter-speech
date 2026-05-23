@@ -56,6 +56,8 @@ class AudioPipeline:
         window_seconds: float = DEFAULT_WINDOW_SECONDS,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         verbose: bool = False,
+        playback: bool = False,
+        output_device: Optional[int] = None,
     ):
         self.transcriber = transcriber
         self.handler = handler
@@ -63,6 +65,8 @@ class AudioPipeline:
         self.audio_file = audio_file
         self.poll_interval = poll_interval
         self.verbose = verbose
+        self.playback = playback
+        self.output_device = output_device
 
         self._window_frames = int(window_seconds * SAMPLE_RATE)
         self._ring: collections.deque = collections.deque(maxlen=self._window_frames)
@@ -133,28 +137,48 @@ class AudioPipeline:
 
     def _run_file(self) -> None:
         import soundfile as sf
+        from tqdm import tqdm
 
         try:
-            audio, sample_rate = sf.read(self.audio_file, dtype="float32", always_2d=False)
+            audio_orig, sample_rate = sf.read(self.audio_file, dtype="float32", always_2d=False)
         except Exception as exc:
             logger.error("Failed to load audio file '%s': %s", self.audio_file, exc)
             return
 
-        if audio.ndim > 1:
-            audio = audio.mean(axis=1)
+        if audio_orig.ndim > 1:
+            audio_orig = audio_orig.mean(axis=1)
 
+        duration = len(audio_orig) / sample_rate
+        print(f"Processing file: {self.audio_file}  ({duration:.1f}s)")
+
+        if self.playback:
+            output_info = sd.query_devices(
+                self.output_device if self.output_device is not None else sd.default.device[1]
+            )
+            print(f"Audio output: [{output_info['index']}] {output_info['name']}")
+            sd.play(audio_orig, samplerate=sample_rate, device=self.output_device)
+
+        audio = audio_orig
         if sample_rate != SAMPLE_RATE:
             logger.info("Resampling from %d Hz to %d Hz", sample_rate, SAMPLE_RATE)
-            audio = _resample(audio, sample_rate, SAMPLE_RATE)
+            audio = _resample(audio_orig, sample_rate, SAMPLE_RATE)
 
-        for start in range(0, len(audio), self._window_frames):
-            if not self._running:
-                break
-            chunk = audio[start : start + self._window_frames]
-            if len(chunk) < SAMPLE_RATE * 0.5:
-                continue
-            time.sleep(len(chunk) / SAMPLE_RATE)
-            self._process(chunk)
+        chunks = [
+            audio[s : s + self._window_frames]
+            for s in range(0, len(audio), self._window_frames)
+            if len(audio[s : s + self._window_frames]) >= SAMPLE_RATE * 0.5
+        ]
+        with tqdm(total=int(duration), unit="s", desc="Processing", ncols=70) as bar:
+            for chunk in chunks:
+                if not self._running:
+                    break
+                chunk_secs = len(chunk) / SAMPLE_RATE
+                time.sleep(chunk_secs)
+                self._process(chunk)
+                bar.update(int(chunk_secs))
+
+        if self.playback:
+            sd.stop()
 
         print("\nFile processing complete. Press 'q' + Enter to stop.")
         self._wait_for_stop()
@@ -215,6 +239,16 @@ def list_input_devices() -> list[dict]:
         {"index": i, "name": d["name"], "channels": d["max_input_channels"]}
         for i, d in enumerate(devices)
         if d["max_input_channels"] > 0
+    ]
+
+
+def list_output_devices() -> list[dict]:
+    """Return a list of available output audio devices."""
+    devices = sd.query_devices()
+    return [
+        {"index": i, "name": d["name"], "channels": d["max_output_channels"]}
+        for i, d in enumerate(devices)
+        if d["max_output_channels"] > 0
     ]
 
 

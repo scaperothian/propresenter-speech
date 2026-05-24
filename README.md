@@ -265,6 +265,29 @@ for better word-error rate on numbers.
 
 ---
 
+## Accuracy evaluation
+
+The `speech-accuracy` and `speech-accuracy-batch` CLI tools measure how well the
+follow-enhanced pipeline matches slides against ground-truth timing data from
+[`propresenter-train`](../propresenter-train).
+
+```bash
+# Evaluate a single presentation
+poetry run speech-accuracy \
+  --ground-truth ../propresenter-train/output/"Mary Had A Little Lamb.json"
+
+# Batch evaluate every presentation in a directory
+poetry run speech-accuracy-batch \
+  --ground-truth-dir ../propresenter-train/output/ --model base
+```
+
+Each run produces a `.log` file of every inference event (timestamp, query,
+predicted slide, ground-truth slide, confidence, margin) plus a printed summary table.
+
+See [docs/speech-accuracy.md](docs/speech-accuracy.md) for the full reference.
+
+---
+
 ## Future modes (planned)
 
 - Wake-word activation ("Hey ProPresenter")  

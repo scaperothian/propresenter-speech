@@ -48,7 +48,8 @@ class FollowEnhancedHandler:
             f"min_margin={self.min_margin:.2f}"
         )
 
-    def on_transcription(self, _text: str, word_buffer: deque) -> None:
+    def on_transcription(self, _text: str, word_buffer: deque, audio_time: float = 0.0) -> None:
+        # audio_time is unused; follow-enhanced matches by embedding similarity, not position.
         query_words = list(word_buffer)[-self.context_words :]
         if len(query_words) < 2:
             return

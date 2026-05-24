@@ -23,6 +23,8 @@ ProPresenter HTTP API to advance, retreat, or jump to a specific slide.
 | Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text, extracts trigger phrase via `--trigger-index` / `--trigger-words`; `refresh_after_advance()` and `refresh_to_slide()` avoid race with API propagation delay |
 | Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — dense cosine similarity over sentence-transformers all-MiniLM-L6-v2 embeddings; `find_slide_with_margin()` returns `(index, score, margin)`; `avg_words_per_slide` property returns rounded average word count after `build()` |
 | CLI entry point | `src/propresenter_speech/main.py` | argparse, builds handler + `AudioPipeline`, calls `.run()` |
+| Accuracy evaluator | `src/speech_accuracy/evaluator.py` | `load_ground_truth()`, `AccuracyHandler`, `AccuracyEvaluator`, `EvaluationResult`; feeds audio through `AudioPipeline(interactive=False)` with `AccuracyHandler` in place of the normal slide-cue handler; scores each inference call against propresenter-train JSON ground truth using T_snap timing |
+| Accuracy CLI | `src/speech_accuracy/main.py` | `speech-accuracy` (single file) and `speech-accuracy-batch` (batch) entry points; JSONL event logging |
 | ProPresenter HTTP client | `../propresenter-client/src/propresenter_client/main.py` | imported via path dependency |
 
 ## Project conventions
@@ -56,6 +58,40 @@ poetry run propresenter-speech --audio-file audio/pledge_of_allegiance.wav      
 poetry run propresenter-speech --audio-file audio/pledge_of_allegiance.wav --playback # process + play through speakers
 poetry run propresenter-speech --audio-file audio/sermon.wav --playback --output-device 3  # specific output device
 ```
+
+## Accuracy evaluation tools
+
+`speech-accuracy` and `speech-accuracy-batch` are CLI entry points in the `speech_accuracy`
+package (`src/speech_accuracy/`) that measure follow-enhanced matching accuracy offline.
+`speech_accuracy` is a separate package within the same Poetry project — it imports from
+`propresenter_speech` but `propresenter_speech` has no dependency on it.
+
+```bash
+# Single presentation
+poetry run speech-accuracy \
+  --ground-truth ../propresenter-train/output/"Mary Had A Little Lamb.json" \
+  --model base --verbose
+
+# All presentations in a directory
+poetry run speech-accuracy-batch \
+  --ground-truth-dir ../propresenter-train/output/ --model base
+```
+
+**Ground-truth JSON** lives in `../propresenter-train/output/`.  Two timing formats are
+normalised automatically: `"start time"`/`"stop time"` and `"trigger time"` (stop derived
+from next slide's start).  Slides with `"enabled": false` are excluded.
+
+**Evaluation strategy** — `AccuracyEvaluator` feeds the audio file through the real
+`AudioPipeline(interactive=False)` with `AccuracyHandler` replacing the normal slide-cue
+handler.  The pipeline processes sequential non-overlapping `window_seconds` chunks (e.g.
+90 calls for a 3-minute file at `window_seconds=2.0`).  `audio_time` passed to
+`on_transcription()` is T_snap — the audio file position (seconds) at the END of each
+transcribed chunk, derived from frame counts with no wall-clock jitter.  The raw
+`SlideEmbedder.find_slide_with_margin()` output is scored against ground truth at T_snap,
+before any cue-threshold or same-slide suppression.
+
+**Output** — per-inference JSONL log (one object per step + a summary record at the end)
+plus a printed accuracy table.  See `docs/speech-accuracy.md` for the full reference.
 
 ## Running tests
 

@@ -33,7 +33,8 @@ class PresentationHandler:
             "Say 'next slide', 'previous slide', or 'go to slide N'."
         )
 
-    def on_transcription(self, text: str, word_buffer: deque) -> None:
+    def on_transcription(self, text: str, word_buffer: deque, audio_time: float = 0.0) -> None:
+        # audio_time is unused; presentation mode responds to commands regardless of position.
         command = self.command_parser.parse(text)
         if command.type != CommandType.UNKNOWN:
             if time.monotonic() - self._last_command_at < COMMAND_COOLDOWN:

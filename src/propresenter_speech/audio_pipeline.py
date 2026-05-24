@@ -58,7 +58,11 @@ class AudioPipeline:
         verbose: bool = False,
         playback: bool = False,
         output_device: Optional[int] = None,
+        interactive: bool = True,
     ):
+        # interactive=False makes _run_file() return automatically after the last
+        # chunk instead of waiting for 'q' + Enter.  Used by AccuracyEvaluator so
+        # that evaluate() can collect results programmatically without blocking.
         self.transcriber = transcriber
         self.handler = handler
         self.device = device
@@ -67,6 +71,7 @@ class AudioPipeline:
         self.verbose = verbose
         self.playback = playback
         self.output_device = output_device
+        self.interactive = interactive
 
         self._window_frames = int(window_seconds * SAMPLE_RATE)
         self._ring: collections.deque = collections.deque(maxlen=self._window_frames)
@@ -124,9 +129,12 @@ class AudioPipeline:
             if self._whisper_busy or len(self._ring) < SAMPLE_RATE * 0.5:
                 continue
             audio = np.array(list(self._ring), dtype=np.float32)
+            # Mic mode has no file position, so audio_time is 0.0.
+            # Handlers that need positional information (AccuracyHandler) only
+            # run against files, where _run_file() passes a frame-derived T_snap.
             threading.Thread(
                 target=self._process,
-                args=(audio,),
+                args=(audio, 0.0),
                 daemon=True,
                 name="pipeline-whisper",
             ).start()
@@ -168,17 +176,36 @@ class AudioPipeline:
             for s in range(0, len(audio), self._window_frames)
             if len(audio[s : s + self._window_frames]) >= SAMPLE_RATE * 0.5
         ]
-        with tqdm(total=int(duration), unit="s", desc="Processing", ncols=70) as bar:
+
+        # frame_pos tracks the number of 16 kHz frames consumed so far.
+        # T_snap for each chunk = frame_pos / SAMPLE_RATE after the chunk is
+        # appended — i.e., the END of the transcribed window.  This is the
+        # precise audio file position passed to on_transcription() via _process(),
+        # with no wall-clock or Whisper-latency offset.
+        frame_pos = 0
+        with tqdm(total=int(duration), unit="s", desc="Processing", ncols=70) as progress:
             for chunk in chunks:
                 if not self._running:
                     break
+                frame_pos += len(chunk)
+                audio_time = frame_pos / SAMPLE_RATE  # T_snap
                 chunk_secs = len(chunk) / SAMPLE_RATE
-                time.sleep(chunk_secs)
-                self._process(chunk)
-                bar.update(int(chunk_secs))
+                # Real-time pacing keeps playback in sync and prevents the CLI
+                # from racing far ahead of the audio position.  Skipped in
+                # non-interactive mode (e.g. AccuracyEvaluator) so evaluation
+                # runs at full CPU speed rather than wall-clock speed.
+                if self.interactive:
+                    time.sleep(chunk_secs)
+                self._process(chunk, audio_time)
+                progress.update(int(chunk_secs))
 
         if self.playback:
             sd.stop()
+
+        if not self.interactive:
+            # Non-interactive mode (e.g. AccuracyEvaluator): return immediately
+            # so the caller can collect results without waiting for user input.
+            return
 
         print("\nFile processing complete. Press 'q' + Enter to stop.")
         self._wait_for_stop()
@@ -187,7 +214,10 @@ class AudioPipeline:
     # Shared transcription
     # ------------------------------------------------------------------
 
-    def _process(self, audio: np.ndarray) -> None:
+    def _process(self, audio: np.ndarray, audio_time: float = 0.0) -> None:
+        # audio_time is T_snap for file mode (end of transcribed window, frames-derived),
+        # or 0.0 for mic mode.  Forwarded verbatim to on_transcription() so handlers
+        # can use it for ground-truth lookup without any latency correction.
         self._whisper_busy = True
         try:
             text = self.transcriber.transcribe(audio)
@@ -196,7 +226,7 @@ class AudioPipeline:
             if self.verbose:
                 print(f"  heard: {text!r}")
             self._word_buffer.extend(extract_words(text))
-            self.handler.on_transcription(text, self._word_buffer)
+            self.handler.on_transcription(text, self._word_buffer, audio_time)
         finally:
             self._whisper_busy = False
 

@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Voice-controlled slide advancement for ProPresenter using Whisper ASR"
 authors = ["scaperoth@berkeley.edu"]
 readme = "README.md"
-packages = [{include = "propresenter_speech", from = "src"}]
+packages = [
+    {include = "propresenter_speech", from = "src"},
+    {include = "speech_accuracy", from = "src"},
+]
 
 [tool.poetry.dependencies]
 python = ">=3.11,<4.0"
@@ -24,6 +27,8 @@ pytest-mock = "*"
 
 [tool.poetry.scripts]
 propresenter-speech = "propresenter_speech.main:main"
+speech-accuracy = "speech_accuracy.main:speech_accuracy_main"
+speech-accuracy-batch = "speech_accuracy.main:evaluate_all_main"
 
 [build-system]
 requires = ["poetry-core"]

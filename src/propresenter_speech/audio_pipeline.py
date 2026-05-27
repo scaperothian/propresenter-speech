@@ -4,10 +4,13 @@ Mic-mode audio pipeline.
 Microphone
     │
     ▼
-AudioPipeline          (sounddevice ring buffer, poll every poll_interval s)
-    │  text + rolling word buffer
+AudioPipeline      (sounddevice ring buffer, poll every poll_interval s)
+    │  audio chunk
     ▼
-ModeHandler.on_transcription()
+Predictor.predict(chunk) → result
+    │
+    ▼
+ModeHandler.on_prediction(result, audio_time)
 
 For file-based processing (accuracy evaluation) see file_pipeline.FilePipeline.
 """
@@ -21,11 +24,9 @@ from typing import TYPE_CHECKING, Optional
 import numpy as np
 import sounddevice as sd
 
-from .slide_follower import extract_words
-from .transcriber import Transcriber
-
 if TYPE_CHECKING:
     from .handlers.base import ModeHandler
+    from .predictor import Predictor
 
 logger = logging.getLogger(__name__)
 
@@ -36,52 +37,45 @@ COMMAND_COOLDOWN = 1.8
 
 
 class _BasePipeline:
-    """Shared transcription state and dispatch for mic and file pipelines."""
+    """Shared audio-chunk dispatch for mic and file pipelines."""
 
     def __init__(
         self,
-        transcriber: Transcriber,
+        predictor: "Predictor",
         handler: "ModeHandler",
         window_seconds: float,
         poll_interval: float,
-        verbose: bool,
     ):
-        self.transcriber = transcriber
+        self.predictor = predictor
         self.handler = handler
         self.poll_interval = poll_interval
-        self.verbose = verbose
         self._window_frames = int(window_seconds * SAMPLE_RATE)
-        self._word_buffer: collections.deque[str] = collections.deque(maxlen=200)
-        self._whisper_busy = False
+        self._model_busy = False
         self._running = False
 
     def _process(self, audio: np.ndarray, audio_time: float = 0.0) -> None:
-        self._whisper_busy = True
+        self._model_busy = True
         try:
-            text = self.transcriber.transcribe(audio)
-            if not text.strip():
+            result = self.predictor.predict(audio)
+            if result is None:
                 return
-            if self.verbose:
-                print(f"  heard: {text!r}")
-            self._word_buffer.extend(extract_words(text))
-            self.handler.on_transcription(text, self._word_buffer, audio_time)
+            self.handler.on_prediction(result, audio_time)
         finally:
-            self._whisper_busy = False
+            self._model_busy = False
 
 
 class AudioPipeline(_BasePipeline):
-    """Mic-mode pipeline: sounddevice ring buffer → Whisper → ModeHandler."""
+    """Mic-mode pipeline: sounddevice ring buffer → Predictor → ModeHandler."""
 
     def __init__(
         self,
-        transcriber: Transcriber,
+        predictor: "Predictor",
         handler: "ModeHandler",
         device: Optional[int] = None,
         window_seconds: float = DEFAULT_WINDOW_SECONDS,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
-        verbose: bool = False,
     ):
-        super().__init__(transcriber, handler, window_seconds, poll_interval, verbose)
+        super().__init__(predictor, handler, window_seconds, poll_interval)
         self.device = device
         self._ring: collections.deque = collections.deque(maxlen=self._window_frames)
 
@@ -123,14 +117,14 @@ class AudioPipeline(_BasePipeline):
     def _poll_loop(self) -> None:
         while self._running:
             time.sleep(self.poll_interval)
-            if self._whisper_busy or len(self._ring) < SAMPLE_RATE * 0.5:
+            if self._model_busy or len(self._ring) < SAMPLE_RATE * 0.5:
                 continue
             audio = np.array(list(self._ring), dtype=np.float32)
             threading.Thread(
                 target=self._process,
                 args=(audio, 0.0),
                 daemon=True,
-                name="pipeline-whisper",
+                name="pipeline-model",
             ).start()
 
     def _wait_for_stop(self) -> None:

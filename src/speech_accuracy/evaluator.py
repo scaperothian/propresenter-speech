@@ -50,6 +50,8 @@ from typing import Optional
 
 from propresenter_speech.audio_pipeline import DEFAULT_WINDOW_SECONDS, DEFAULT_POLL_INTERVAL
 from propresenter_speech.file_pipeline import FilePipeline
+from propresenter_speech.predictor import TranscriptionResult
+from propresenter_speech.whisper_predictor import WhisperPredictor
 from propresenter_speech.slide_embedder import SlideEmbedder, WordWindowEmbedder
 from propresenter_speech.transcriber import Transcriber
 
@@ -234,13 +236,8 @@ class AccuracyHandler:
     def startup_description(self) -> str:
         return f"Accuracy evaluation active — {len(self.ground_truth)} slides"
 
-    def on_transcription(
-        self, _text: str, word_buffer: collections.deque, audio_time: float = 0.0
-    ) -> None:
-        # audio_time is T_snap: audio file position at the END of the transcribed
-        # window, computed from frame counts in FilePipeline._run_file().  No
-        # latency correction is needed or applied here.
-        query_words = list(word_buffer)[-self.context_words:]
+    def on_prediction(self, result: TranscriptionResult, audio_time: float = 0.0) -> None:
+        query_words = list(result.word_buffer)[-self.context_words:]
         query = " ".join(query_words) if len(query_words) >= 2 else ""
 
         raw_idx, confidence, margin = (
@@ -333,7 +330,7 @@ class AccuracyEvaluator:
         )
 
         FilePipeline(
-            transcriber=self.transcriber,
+            predictor=WhisperPredictor(self.transcriber),
             handler=handler,
             audio_file=audio_path,
             window_seconds=self.window_seconds,

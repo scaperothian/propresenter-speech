@@ -4,10 +4,13 @@ File-mode audio pipeline for offline evaluation.
 Audio file
     │  sliding window (window_seconds wide, advances by poll_interval)
     ▼
-FilePipeline           (synchronous — no threading)
-    │  text + rolling word buffer
+FilePipeline       (synchronous — no threading)
+    │  audio chunk
     ▼
-ModeHandler.on_transcription(text, word_buffer, audio_time)
+Predictor.predict(chunk) → result
+    │
+    ▼
+ModeHandler.on_prediction(result, audio_time)
 
 audio_time is T_snap — the file position (seconds) at the END of the
 transcribed window, derived from frame counts with no wall-clock jitter.
@@ -18,7 +21,7 @@ For live microphone capture see audio_pipeline.AudioPipeline.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 import sounddevice as sd
@@ -29,27 +32,28 @@ from .audio_pipeline import (
     DEFAULT_WINDOW_SECONDS,
     SAMPLE_RATE,
 )
-from .transcriber import Transcriber
-from .handlers.base import ModeHandler
+
+if TYPE_CHECKING:
+    from .handlers.base import ModeHandler
+    from .predictor import Predictor
 
 logger = logging.getLogger(__name__)
 
 
 class FilePipeline(_BasePipeline):
-    """File-mode pipeline: sliding-window audio file → Whisper → ModeHandler."""
+    """File-mode pipeline: sliding-window audio file → Predictor → ModeHandler."""
 
     def __init__(
         self,
-        transcriber: Transcriber,
-        handler: ModeHandler,
+        predictor: "Predictor",
+        handler: "ModeHandler",
         audio_file: str,
         window_seconds: float = DEFAULT_WINDOW_SECONDS,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
-        verbose: bool = False,
         playback: bool = False,
         output_device: Optional[int] = None,
     ):
-        super().__init__(transcriber, handler, window_seconds, poll_interval, verbose)
+        super().__init__(predictor, handler, window_seconds, poll_interval)
         self.audio_file = audio_file
         self.playback = playback
         self.output_device = output_device

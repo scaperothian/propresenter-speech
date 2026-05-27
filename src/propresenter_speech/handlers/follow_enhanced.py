@@ -1,6 +1,7 @@
 import logging
-from collections import deque
 from typing import Optional
+
+from ..predictor import TranscriptionResult
 
 DEFAULT_CONTEXT_WORDS = 3
 DEFAULT_SIMILARITY_THRESHOLD = 0.4
@@ -48,9 +49,8 @@ class FollowEnhancedHandler:
             f"min_margin={self.min_margin:.2f}"
         )
 
-    def on_transcription(self, _text: str, word_buffer: deque, audio_time: float = 0.0) -> None:
-        # audio_time is unused; follow-enhanced matches by embedding similarity, not position.
-        query_words = list(word_buffer)[-self.context_words :]
+    def on_prediction(self, result: TranscriptionResult, _audio_time: float = 0.0) -> None:
+        query_words = list(result.word_buffer)[-self.context_words :]
         if len(query_words) < 2:
             return
 

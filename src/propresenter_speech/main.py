@@ -24,6 +24,7 @@ from .audio_pipeline import (
     list_input_devices,
     list_output_devices,
 )
+from .whisper_predictor import WhisperPredictor
 from .command_parser import CommandParser
 from .handlers import FollowEnhancedHandler, FollowHandler, PresentationHandler
 from .handlers.follow_enhanced import (
@@ -341,12 +342,11 @@ def main() -> None:
     print("Whisper ready.")
 
     AudioPipeline(
-        transcriber=transcriber,
+        predictor=WhisperPredictor(transcriber, verbose=args.verbose),
         handler=handler,
         device=args.device,
         window_seconds=args.window_seconds,
         poll_interval=args.poll_interval,
-        verbose=args.verbose,
     ).run()
 
 

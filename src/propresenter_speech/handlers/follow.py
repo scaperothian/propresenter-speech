@@ -1,11 +1,11 @@
 import logging
 import sys
 import time
-from collections import deque
 
 from propresenter_client.main import ProPresenterController
 
 from ..audio_pipeline import COMMAND_COOLDOWN
+from ..predictor import TranscriptionResult
 from ..command_parser import Command, CommandParser, CommandType
 from ..slide_follower import SlideFollower
 
@@ -46,9 +46,8 @@ class FollowHandler:
             "Explicit commands ('next slide', 'previous slide', 'go to slide N') also work."
         )
 
-    def on_transcription(self, text: str, word_buffer: deque, audio_time: float = 0.0) -> None:
-        # audio_time is unused; follow mode advances based on trigger words, not position.
-        command = self.command_parser.parse(text)
+    def on_prediction(self, result: TranscriptionResult, _audio_time: float = 0.0) -> None:
+        command = self.command_parser.parse(result.text)
         if command.type != CommandType.UNKNOWN:
             if time.monotonic() - self._last_advance < COMMAND_COOLDOWN:
                 return
@@ -64,7 +63,7 @@ class FollowHandler:
         if not self.slide_follower.has_triggers:
             self.slide_follower.refresh()
 
-        while self.slide_follower.has_triggers and self.slide_follower.matches(text):
+        while self.slide_follower.has_triggers and self.slide_follower.matches(result.text):
             triggered_on = self.slide_follower.trigger_words
             ok = self.pro_controller.next_slide()
             if not ok:

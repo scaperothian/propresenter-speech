@@ -14,7 +14,7 @@ ProPresenter HTTP API to advance, retreat, or jump to a specific slide.
 |---------|--------|-------|
 | Whisper transcription | `src/propresenter_speech/transcriber.py` | lazy-loads via faster-whisper; no PyTorch; models from HuggingFace |
 | Command parsing | `src/propresenter_speech/command_parser.py` | pure Python, no I/O |
-| Shared audio pipeline | `src/propresenter_speech/audio_pipeline.py` | `AudioPipeline` — ring-buffer mic capture OR sliding-window file mode (advance by `poll_interval`, window depth `window_seconds`; tqdm progress bar, optional speaker playback); polls Whisper on a timer; calls `ModeHandler.on_transcription()` |
+| Shared audio pipeline | `src/propresenter_speech/audio_pipeline.py` | `AudioPipeline` — ring-buffer mic capture (and file mode used internally by the accuracy evaluator); polls Whisper on a timer; calls `ModeHandler.on_transcription()` |
 | Mode enum | `src/propresenter_speech/modes.py` | `Mode.PRESENTATION` / `Mode.FOLLOW` / `Mode.FOLLOW_ENHANCED` |
 | Mode handler protocol | `src/propresenter_speech/handlers/base.py` | `ModeHandler` Protocol — `on_startup()`, `startup_description()`, `on_transcription()` |
 | Presentation mode | `src/propresenter_speech/handlers/presentation.py` | `PresentationHandler` — parses explicit voice commands only |
@@ -58,9 +58,6 @@ poetry run propresenter-speech --device 2               # use device index 2
 poetry run propresenter-speech --host 192.168.1.5       # remote ProPresenter host
 poetry run propresenter-speech --window-seconds 3.0     # longer audio context for Whisper
 poetry run propresenter-speech --poll-interval 0.1      # faster response
-poetry run propresenter-speech --audio-file audio/pledge_of_allegiance.wav            # process file (tqdm progress bar)
-poetry run propresenter-speech --audio-file audio/pledge_of_allegiance.wav --playback # process + play through speakers
-poetry run propresenter-speech --audio-file audio/sermon.wav --playback --output-device 3  # specific output device
 ```
 
 ## Accuracy evaluation tools

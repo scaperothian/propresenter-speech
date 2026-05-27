@@ -19,7 +19,6 @@ Three modes of operation:
 | macOS | Tested on macOS 13+; built-in or headset mic both work |
 | Python 3.11+ | Managed via Poetry |
 | [Poetry](https://python-poetry.org) | `pip install poetry` or `brew install poetry` |
-| [ffmpeg](https://ffmpeg.org) | Not required for the mic pipeline; only needed if passing audio files directly |
 | ProPresenter 7 | Network API must be enabled: Preferences → Network → Enable Network |
 | `../propresenter-client` | Sibling directory — the HTTP client library |
 
@@ -127,11 +126,6 @@ Audio pipeline:
   --window-seconds SECS Rolling audio window length fed to Whisper, all modes (default: 2.0)
   --poll-interval SECS  Seconds between Whisper inference calls, all modes (default: 0.2)
   --list-devices        Print available input and output audio devices and exit
-  --audio-file PATH     Process a WAV/FLAC/OGG file instead of the microphone
-                        (resampled to 16 kHz automatically; tqdm progress bar shown)
-  --playback            Play the audio file through speakers while processing
-                        (requires --audio-file)
-  --output-device N     Output device index for playback (see --list-devices; default: system default)
 
 Misc:
   --verbose             Print transcriptions and trigger words to stdout
@@ -173,15 +167,6 @@ poetry run propresenter-speech --mode follow --verbose
 poetry run propresenter-speech --list-devices
 poetry run propresenter-speech --device 2
 
-# Process an audio file with tqdm progress bar (silent)
-poetry run propresenter-speech --audio-file audio/sermon.wav --mode follow
-
-# Process an audio file and play it through speakers at the same time
-poetry run propresenter-speech --audio-file audio/sermon.wav --mode follow --playback
-
-# Play through a specific output device
-poetry run propresenter-speech --audio-file audio/sermon.wav --playback --output-device 3
-
 # Connect to ProPresenter on another machine
 poetry run propresenter-speech --host 192.168.1.10
 
@@ -198,7 +183,7 @@ poetry run propresenter-speech --window-seconds 3.0
 All three modes share a single `AudioPipeline` (ring buffer + Whisper polling). Mode logic lives exclusively in a `ModeHandler` class.
 
 ```
-Microphone (or audio file)
+Microphone
     │
     ▼
 AudioPipeline          (sounddevice ring buffer, poll every --poll-interval s)

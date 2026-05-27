@@ -3,8 +3,8 @@ Ground-truth loader and evaluation engine for speech-accuracy.
 
 Evaluation strategy
 -------------------
-AccuracyEvaluator feeds an audio file through the real AudioPipeline
-with an AccuracyHandler in place of the normal slide-cue handler.  This means
+AccuracyEvaluator feeds an audio file through FilePipeline with an
+AccuracyHandler in place of the normal slide-cue handler.  This means
 evaluation uses exactly the same Whisper transcription loop, word buffer, and
 chunk sizing as production follow-enhanced mode.
 
@@ -15,21 +15,20 @@ audio_time received in on_transcription() is T_snap — the audio file position
 
     T_snap = frame_pos / SAMPLE_RATE
 
-This is computed in AudioPipeline._run_file() by accumulating the length of
-each chunk before calling _process().  It carries no wall-clock jitter and no
-Whisper processing latency — Whisper may take 0.3–0.8 s to return, but by the
-time on_transcription() fires, audio_time still refers to the window that was
-snapshotted, not the current moment.
+It carries no wall-clock jitter and no Whisper processing latency — Whisper
+may take 0.3–0.8 s to return, but by the time on_transcription() fires,
+audio_time still refers to the window that was snapshotted, not the current
+moment.
 
 Consequence for accuracy measurement: ground-truth lookup uses the exact audio
 position the model was reasoning about, independent of how long inference took.
 
 File-mode chunking (sliding window)
 -------------------------------------
-AudioPipeline._run_file() advances by poll_interval each step and transcribes
-the trailing window_seconds of audio — identical to mic mode's ring buffer.
-For a 3-minute file at window_seconds=2.0, poll_interval=0.2 this is 900 calls;
-at poll_interval=0.05 it is 3,600 calls.  Unlike mic mode there is no
+FilePipeline advances by poll_interval each step and transcribes the trailing
+window_seconds of audio — identical to mic mode's ring buffer.  For a 3-minute
+file at window_seconds=2.0, poll_interval=0.2 this is 900 calls; at
+poll_interval=0.05 it is 3,600 calls.  Unlike mic mode there is no
 _whisper_busy throttle, so every step is evaluated regardless of Whisper speed.
 
 Ground-truth JSON schema (../propresenter-train/output/)
@@ -49,7 +48,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 
-from propresenter_speech.audio_pipeline import AudioPipeline, DEFAULT_WINDOW_SECONDS, DEFAULT_POLL_INTERVAL
+from propresenter_speech.audio_pipeline import DEFAULT_WINDOW_SECONDS, DEFAULT_POLL_INTERVAL
+from propresenter_speech.file_pipeline import FilePipeline
 from propresenter_speech.slide_embedder import SlideEmbedder, WordWindowEmbedder
 from propresenter_speech.transcriber import Transcriber
 
@@ -238,7 +238,7 @@ class AccuracyHandler:
         self, _text: str, word_buffer: collections.deque, audio_time: float = 0.0
     ) -> None:
         # audio_time is T_snap: audio file position at the END of the transcribed
-        # window, computed from frame counts in AudioPipeline._run_file().  No
+        # window, computed from frame counts in FilePipeline._run_file().  No
         # latency correction is needed or applied here.
         query_words = list(word_buffer)[-self.context_words:]
         query = " ".join(query_words) if len(query_words) >= 2 else ""
@@ -332,7 +332,7 @@ class AccuracyEvaluator:
             verbose=self.verbose,
         )
 
-        AudioPipeline(
+        FilePipeline(
             transcriber=self.transcriber,
             handler=handler,
             audio_file=audio_path,

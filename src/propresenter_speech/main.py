@@ -14,7 +14,6 @@ Usage examples:
 import argparse
 import logging
 import sys
-from pathlib import Path
 
 from propresenter_client.main import ProPresenterController
 
@@ -181,25 +180,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         dest="list_devices",
         help="Print available input and output audio devices and exit",
     )
-    audio_grp.add_argument(
-        "--audio-file",
-        default=None,
-        metavar="PATH",
-        dest="audio_file",
-        help="Process an audio file instead of the microphone (WAV/FLAC/OGG; resampled to 16 kHz automatically)",
-    )
-    audio_grp.add_argument(
-        "--playback",
-        action="store_true",
-        help="Play the audio file through speakers while processing (requires --audio-file)",
-    )
-    audio_grp.add_argument(
-        "--output-device",
-        type=int,
-        default=None,
-        dest="output_device",
-        help="Output device index for playback (see --list-devices; default: system default)",
-    )
 
     parser.add_argument("--verbose", action="store_true", help="Print transcribed text to stdout")
     parser.add_argument(
@@ -297,10 +277,6 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    if args.audio_file and not Path(args.audio_file).is_file():
-        print(f"Error: Audio file not found: {args.audio_file}")
-        sys.exit(1)
-
     if args.list_devices:
         inputs = list_input_devices()
         print("Input devices:")
@@ -317,10 +293,6 @@ def main() -> None:
         else:
             print("  (none found)")
         sys.exit(0)
-
-    if args.playback and not args.audio_file:
-        print("Error: --playback requires --audio-file.")
-        sys.exit(1)
 
     mode = Mode(args.mode)
 
@@ -372,12 +344,9 @@ def main() -> None:
         transcriber=transcriber,
         handler=handler,
         device=args.device,
-        audio_file=args.audio_file,
         window_seconds=args.window_seconds,
         poll_interval=args.poll_interval,
         verbose=args.verbose,
-        playback=args.playback,
-        output_device=args.output_device,
     ).run()
 
 

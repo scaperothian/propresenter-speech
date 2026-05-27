@@ -7,7 +7,8 @@ here since it requires real sounddevice hardware.
 import numpy as np
 import pytest
 
-from propresenter_speech.audio_pipeline import _resample, SAMPLE_RATE
+from propresenter_speech.audio_pipeline import SAMPLE_RATE
+from propresenter_speech.file_pipeline import _resample
 
 
 class TestResample:

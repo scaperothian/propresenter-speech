@@ -14,7 +14,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from propresenter_speech.audio_pipeline import _resample, SAMPLE_RATE
+from propresenter_speech.audio_pipeline import SAMPLE_RATE
+from propresenter_speech.file_pipeline import _resample
 from propresenter_speech.slide_follower import SlideFollower
 from propresenter_speech.transcriber import Transcriber
 

@@ -32,7 +32,7 @@ from .handlers.follow_enhanced import (
     DEFAULT_SIMILARITY_THRESHOLD,
 )
 from .modes import Mode
-from .slide_embedder import SlideEmbedder
+from .slide_embedder import SlideEmbedder, WordWindowEmbedder
 from .slide_follower import SlideFollower
 from .transcriber import Transcriber
 
@@ -103,6 +103,28 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "(follow-enhanced) recent spoken words to form the query n-gram\n"
             "(default: avg words/slide, computed from the loaded presentation)"
+        ),
+    )
+    mode_grp.add_argument(
+        "--embedding-mode",
+        default="slide",
+        choices=["slide", "word-window"],
+        dest="embedding_mode",
+        help=(
+            "(follow-enhanced) slide: one embedding per slide (default)\n"
+            "word-window: one embedding per word position — finer resolution,\n"
+            "             handles repeated sections (choruses) correctly"
+        ),
+    )
+    mode_grp.add_argument(
+        "--embedding-stride",
+        type=int,
+        default=1,
+        dest="embedding_stride",
+        metavar="N",
+        help=(
+            "(follow-enhanced, word-window mode) words to advance between\n"
+            "successive windows; 1 = maximum resolution (default)"
         ),
     )
     mode_grp.add_argument(
@@ -191,11 +213,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _build_embedder(pro: ProPresenterController) -> SlideEmbedder:
-    """Fetch slides from the active presentation and return a built SlideEmbedder."""
+def _fetch_slides(pro: ProPresenterController) -> list[tuple[int, str]]:
+    """Return (slide_idx, text) pairs for all text slides in the active presentation."""
     uuid = pro.get_active_presentation_uuid()
     if not uuid:
-        print("Error: Could not retrieve active presentation UUID. Make sure a presentation is active in ProPresenter.")
+        print(
+            "Error: Could not retrieve active presentation UUID. "
+            "Make sure a presentation is active in ProPresenter."
+        )
         sys.exit(1)
 
     details = pro.get_presentation_details(uuid)
@@ -217,24 +242,40 @@ def _build_embedder(pro: ProPresenterController) -> SlideEmbedder:
         print("Error: No slides with text found in the active presentation.")
         sys.exit(1)
 
-    slide_indices = [i for i, _ in indexed_texts]
-    slide_texts = [t for _, t in indexed_texts]
-    print(f"Found {len(slide_texts)} slides with text (out of {len(slides)} total). Building embeddings…")
-
-    embedder = SlideEmbedder()
-    embedder.load()
-    embedder.build(slide_texts, slide_indices=slide_indices)
-    print("Embeddings ready.")
-    return embedder
+    return indexed_texts
 
 
 def _build_follow_enhanced_handler(pro: ProPresenterController, args) -> FollowEnhancedHandler:
-    embedder = _build_embedder(pro)
+    indexed_texts = _fetch_slides(pro)
+    slide_texts = [t for _, t in indexed_texts]
+    total_slides = len(indexed_texts)
+
     if args.context_words is None:
-        context_words = embedder.avg_words_per_slide
+        total_words = sum(len(t.split()) for t in slide_texts)
+        context_words = max(1, round(total_words / total_slides))
         print(f"Context words: {context_words} (avg words/slide, computed from presentation)")
     else:
         context_words = args.context_words
+
+    if args.embedding_mode == "word-window":
+        print(
+            f"Found {total_slides} slides with text. "
+            f"Building word-window embeddings (stride={args.embedding_stride})…"
+        )
+        embedder: SlideEmbedder | WordWindowEmbedder = WordWindowEmbedder(
+            stride=args.embedding_stride
+        )
+        embedder.load()
+        # Slides are already in ProPresenter slide-list order, which is
+        # chronological playback order for this presentation.
+        embedder.build(indexed_texts, context_words=context_words)
+    else:
+        print(f"Found {total_slides} slides with text. Building slide embeddings…")
+        embedder = SlideEmbedder()
+        embedder.load()
+        embedder.build(slide_texts, slide_indices=[i for i, _ in indexed_texts])
+
+    print("Embeddings ready.")
     return FollowEnhancedHandler(
         pro_controller=pro,
         slide_embedder=embedder,

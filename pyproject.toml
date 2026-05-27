@@ -19,6 +19,7 @@ requests = "*"
 word2number = "*"
 sentence-transformers = "^3.0"
 tqdm = "*"
+matplotlib = "*"
 propresenter-client = {path = "../propresenter-client", develop = true}
 
 [tool.poetry.group.dev.dependencies]
@@ -29,6 +30,7 @@ pytest-mock = "*"
 propresenter-speech = "propresenter_speech.main:main"
 speech-accuracy = "speech_accuracy.main:speech_accuracy_main"
 speech-accuracy-batch = "speech_accuracy.main:evaluate_all_main"
+speech-accuracy-plot = "speech_accuracy.plot:plot_main"
 
 [build-system]
 requires = ["poetry-core"]

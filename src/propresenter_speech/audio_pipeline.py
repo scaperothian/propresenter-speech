@@ -10,7 +10,7 @@ Mic mode:
             Transcriber → ModeHandler.on_transcription(text, word_buffer)
 
 File mode:
-  audio file → non-overlapping window_seconds chunks (sequential, no ring buffer)
+  audio file → sliding window (window_seconds wide, advances by poll_interval)
                 ▼
             Transcriber → ModeHandler.on_transcription(text, word_buffer)
 """
@@ -58,11 +58,7 @@ class AudioPipeline:
         verbose: bool = False,
         playback: bool = False,
         output_device: Optional[int] = None,
-        interactive: bool = True,
     ):
-        # interactive=False makes _run_file() return automatically after the last
-        # chunk instead of waiting for 'q' + Enter.  Used by AccuracyEvaluator so
-        # that evaluate() can collect results programmatically without blocking.
         self.transcriber = transcriber
         self.handler = handler
         self.device = device
@@ -71,7 +67,6 @@ class AudioPipeline:
         self.verbose = verbose
         self.playback = playback
         self.output_device = output_device
-        self.interactive = interactive
 
         self._window_frames = int(window_seconds * SAMPLE_RATE)
         self._ring: collections.deque = collections.deque(maxlen=self._window_frames)
@@ -171,44 +166,28 @@ class AudioPipeline:
             logger.info("Resampling from %d Hz to %d Hz", sample_rate, SAMPLE_RATE)
             audio = _resample(audio_orig, sample_rate, SAMPLE_RATE)
 
-        chunks = [
-            audio[s : s + self._window_frames]
-            for s in range(0, len(audio), self._window_frames)
-            if len(audio[s : s + self._window_frames]) >= SAMPLE_RATE * 0.5
-        ]
+        poll_frames = int(self.poll_interval * SAMPLE_RATE)
+        min_frames = int(SAMPLE_RATE * 0.5)
+        total_frames = len(audio)
 
-        # frame_pos tracks the number of 16 kHz frames consumed so far.
-        # T_snap for each chunk = frame_pos / SAMPLE_RATE after the chunk is
-        # appended — i.e., the END of the transcribed window.  This is the
-        # precise audio file position passed to on_transcription() via _process(),
-        # with no wall-clock or Whisper-latency offset.
-        frame_pos = 0
+        # Sliding window: advance by poll_frames each step, always transcribe
+        # the trailing window_frames.  Mirrors mic mode's ring buffer exactly —
+        # poll_interval controls step size, window_seconds controls context depth.
         with tqdm(total=int(duration), unit="s", desc="Processing", ncols=70) as progress:
-            for chunk in chunks:
-                if not self._running:
+            end = poll_frames
+            while self._running:
+                end = min(end, total_frames)
+                chunk = audio[max(0, end - self._window_frames) : end]
+                if len(chunk) >= min_frames:
+                    self._process(chunk, end / SAMPLE_RATE)
+                progress.n = int(end / SAMPLE_RATE)
+                progress.refresh()
+                if end >= total_frames:
                     break
-                frame_pos += len(chunk)
-                audio_time = frame_pos / SAMPLE_RATE  # T_snap
-                chunk_secs = len(chunk) / SAMPLE_RATE
-                # Real-time pacing keeps playback in sync and prevents the CLI
-                # from racing far ahead of the audio position.  Skipped in
-                # non-interactive mode (e.g. AccuracyEvaluator) so evaluation
-                # runs at full CPU speed rather than wall-clock speed.
-                if self.interactive:
-                    time.sleep(chunk_secs)
-                self._process(chunk, audio_time)
-                progress.update(int(chunk_secs))
+                end += poll_frames
 
         if self.playback:
             sd.stop()
-
-        if not self.interactive:
-            # Non-interactive mode (e.g. AccuracyEvaluator): return immediately
-            # so the caller can collect results without waiting for user input.
-            return
-
-        print("\nFile processing complete. Press 'q' + Enter to stop.")
-        self._wait_for_stop()
 
     # ------------------------------------------------------------------
     # Shared transcription

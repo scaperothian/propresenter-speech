@@ -21,7 +21,7 @@ ProPresenter HTTP API to advance, retreat, or jump to a specific slide.
 | Follow mode | `src/propresenter_speech/handlers/follow.py` | `FollowHandler` — explicit commands + trigger-word auto-advance via `SlideFollower`; cooldown prevents double-advance on overlapping windows; explicit commands use `refresh_after_advance`/`refresh_to_slide` to avoid API race condition |
 | Follow-enhanced mode | `src/propresenter_speech/handlers/follow_enhanced.py` | `FollowEnhancedHandler` — semantic cosine-similarity match via `SlideEmbedder`; jumps to best-matching slide freely |
 | Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text, extracts trigger phrase via `--trigger-index` / `--trigger-words`; `refresh_after_advance()` and `refresh_to_slide()` avoid race with API propagation delay |
-| Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — dense cosine similarity over sentence-transformers all-MiniLM-L6-v2 embeddings; `find_slide_with_margin()` returns `(index, score, margin)`; `avg_words_per_slide` property returns rounded average word count after `build()` |
+| Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — one embedding per slide; `WordWindowEmbedder` — one embedding per word position (configurable stride), slides passed as `(slide_idx, text)` pairs in chronological order so repeated sections resolve correctly; both expose `find_slide_with_margin()` and `avg_words_per_slide` |
 | CLI entry point | `src/propresenter_speech/main.py` | argparse, builds handler + `AudioPipeline`, calls `.run()` |
 | Accuracy evaluator | `src/speech_accuracy/evaluator.py` | `load_ground_truth()`, `AccuracyHandler`, `AccuracyEvaluator`, `EvaluationResult`; feeds audio through `AudioPipeline(interactive=False)` with `AccuracyHandler` in place of the normal slide-cue handler; scores each inference call against propresenter-train JSON ground truth using T_snap timing |
 | Accuracy CLI | `src/speech_accuracy/main.py` | `speech-accuracy` (single file) and `speech-accuracy-batch` (batch) entry points; JSONL event logging |
@@ -44,7 +44,9 @@ poetry install
 poetry run propresenter-speech                          # presentation mode (default)
 poetry run propresenter-speech --mode follow            # follow mode (default: 2-word phrase ending at second-to-last word)
 poetry run propresenter-speech --mode follow --trigger-index=-1 --trigger-words=1  # trigger on last word only
-poetry run propresenter-speech --mode follow-enhanced          # semantic embedding mode
+poetry run propresenter-speech --mode follow-enhanced          # semantic embedding mode (slide embedder, default)
+poetry run propresenter-speech --mode follow-enhanced --embedding-mode word-window   # word-window embedder
+poetry run propresenter-speech --mode follow-enhanced --embedding-mode word-window --embedding-stride 2
 
 # Common flags
 poetry run propresenter-speech --model small            # better accuracy

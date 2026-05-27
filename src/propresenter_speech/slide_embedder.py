@@ -1,6 +1,17 @@
 """
 Dense slide matching using sentence-transformer embeddings.
 
+Two embedder strategies share the same find_slide_with_margin() interface:
+
+SlideEmbedder — one embedding per slide.  Fast to build; coarse resolution.
+
+WordWindowEmbedder — one embedding per word position (configurable stride).
+  Slides a context_words-wide window across the entire chronological word
+  sequence.  Each window is labelled by the slide that owns its last word,
+  so cross-boundary windows transition labels the moment the speaker crosses
+  into a new slide.  Repeated sections (e.g. a chorus) appear as distinct
+  positions in the continuum with their own slide indices.
+
 Scoring uses cosine similarity over all-MiniLM-L6-v2 embeddings
 (cached after first run via HuggingFace Hub, ~80 MB).
 """
@@ -135,6 +146,141 @@ class SlideEmbedder:
     @property
     def slide_count(self) -> int:
         return self._slide_count
+
+    @property
+    def avg_words_per_slide(self) -> int:
+        """Average word count per slide, rounded to nearest int (minimum 1)."""
+        if not self._built or not self._slide_texts:
+            return 3
+        total = sum(len(t.split()) for t in self._slide_texts)
+        return max(1, round(total / len(self._slide_texts)))
+
+
+class WordWindowEmbedder:
+    """
+    Dense index of overlapping word-window embeddings across the full
+    presentation text in chronological playback order.
+
+    Instead of one embedding per slide, builds one embedding per word position
+    (step = stride words).  Each window of context_words consecutive words is
+    labelled by the slide that owns the window's last word, so the embedder
+    can return a slide cue at word-level resolution rather than slide-level.
+
+    Repeated sections (chorus repeats) appear as distinct positions in the
+    word continuum — each occurrence carries its own slide_idx label, so the
+    correct instance is returned when the speaker is in that part of the song.
+
+    The build() caller is responsible for passing slides in chronological
+    (timestamp) order so the word continuum reflects actual playback sequence.
+    """
+
+    def __init__(self, model_name: str = DEFAULT_MODEL, stride: int = 1):
+        self._model_name = model_name
+        self._stride = stride
+        self._model = None
+        self._embeddings: Optional[np.ndarray] = None
+        self._labels: list[int] = []       # slide_idx for each window embedding
+        self._slide_texts: list[str] = []  # for avg_words_per_slide
+        self._built = False
+
+    def load(self) -> None:
+        """Download (first run) and initialise the sentence-transformers model."""
+        from sentence_transformers import SentenceTransformer
+        logger.info("Loading sentence-transformers model '%s'…", self._model_name)
+        self._model = SentenceTransformer(self._model_name)
+        logger.info("Embedding model ready.")
+
+    def build(self, slides: list[tuple[int, str]], context_words: int) -> None:
+        """
+        Build the word-window index.
+
+        Args:
+            slides:        (slide_idx, text) pairs in chronological playback order.
+                           Repeated slides (e.g. chorus) must appear multiple times,
+                           each with the ProPresenter index to cue on a match.
+                           Caller sorts by timestamp before passing.
+            context_words: words per window — must match the query context_words
+                           so query and index embeddings live in compatible spaces.
+        """
+        if not slides:
+            raise ValueError("slides must not be empty")
+
+        self._slide_texts = [text for _, text in slides]
+
+        # Flatten all words into a sequence of (word, slide_idx) pairs.
+        # extract_words handles RTF tags, HTML, punctuation, and lowercasing.
+        from .slide_follower import extract_words
+        word_seq: list[tuple[str, int]] = [
+            (w, slide_idx)
+            for slide_idx, text in slides
+            for w in extract_words(text)
+        ]
+
+        if len(word_seq) < context_words:
+            raise ValueError(
+                f"Presentation has {len(word_seq)} words total but "
+                f"context_words={context_words}. Reduce --context-words."
+            )
+
+        window_texts: list[str] = []
+        self._labels = []
+        for start in range(0, len(word_seq) - context_words + 1, self._stride):
+            window = word_seq[start : start + context_words]
+            window_texts.append(" ".join(w for w, _ in window))
+            # Label = slide_idx of the last word: the window represents having
+            # just heard up to that word, so the correct cue is that slide.
+            self._labels.append(window[-1][1])
+
+        if self._model is None:
+            self.load()
+
+        logger.info(
+            "Building word-window embeddings: %d windows (stride=%d, context=%d words)…",
+            len(window_texts), self._stride, context_words,
+        )
+        self._embeddings = np.array(
+            self._model.encode(window_texts, show_progress_bar=False),
+            dtype=np.float32,
+        )
+        logger.info("Word-window embeddings ready (%d × %d).", *self._embeddings.shape)
+        self._built = True
+
+    def find_slide(self, text: str) -> tuple[int, float]:
+        """Return (slide_idx, cosine_score) for the best-matching window."""
+        if not self._built or not text.strip():
+            return -1, 0.0
+        raw = self._cosine_scores(text)
+        best_pos = int(np.argmax(raw))
+        return self._labels[best_pos], float(np.clip(raw[best_pos], 0.0, 1.0))
+
+    def find_slide_with_margin(self, text: str) -> tuple[int, float, float]:
+        """Like find_slide but also returns the margin (best − second-best raw cosine)."""
+        if not self._built or not text.strip():
+            return -1, 0.0, 0.0
+        raw = self._cosine_scores(text)
+        best_pos = int(np.argmax(raw))
+        best_raw = float(raw[best_pos])
+        if len(raw) > 1:
+            second = float(np.partition(raw, -2)[-2])
+            margin = best_raw - second
+        else:
+            margin = best_raw
+        return self._labels[best_pos], float(np.clip(best_raw, 0.0, 1.0)), margin
+
+    def _cosine_scores(self, text: str) -> np.ndarray:
+        query = np.array(
+            self._model.encode([text], show_progress_bar=False)[0],
+            dtype=np.float32,
+        )
+        query_norm = float(np.linalg.norm(query))
+        if query_norm == 0:
+            return np.zeros(len(self._labels))
+        slide_norms = np.linalg.norm(self._embeddings, axis=1)
+        return np.where(
+            slide_norms > 0,
+            (self._embeddings @ query) / (slide_norms * query_norm),
+            0.0,
+        )
 
     @property
     def avg_words_per_slide(self) -> int:

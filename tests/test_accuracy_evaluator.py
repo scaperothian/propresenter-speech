@@ -132,13 +132,37 @@ _TRIGGER_TIME_JSON = {
 }
 
 
+_REPEATED_SLIDE_JSON = {
+    "presentation": {
+        "id": {"uuid": "ghi", "name": "Song With Chorus", "audio": "/tmp/chorus.wav"},
+        "groups": [
+            {
+                "name": "",
+                "color": None,
+                "slides": [
+                    {"enabled": True, "text": "verse one",
+                     "trigger time": [0.0], "notes": "", "label": ""},
+                    {"enabled": True, "text": "chorus text",
+                     "trigger time": [10.0, 30.0, 50.0], "notes": "", "label": ""},
+                    {"enabled": True, "text": "verse two",
+                     "trigger time": [20.0], "notes": "", "label": ""},
+                ],
+            }
+        ],
+        "has_timeline": False,
+        "presentation_path": "/tmp/chorus.pro",
+        "destination": "presentation",
+    }
+}
+
+
 class TestLoadGroundTruth:
     def _write(self, data: dict) -> Path:
         p = Path(tempfile.mktemp(suffix=".json"))
         p.write_text(json.dumps(data))
         return p
 
-    def test_start_stop_format(self):
+    def test_start_stop_format_legacy_scalars(self):
         p = self._write(_START_STOP_JSON)
         slides, audio_path, name = load_ground_truth(p)
         assert name == "Test Song"
@@ -148,14 +172,45 @@ class TestLoadGroundTruth:
         assert slides[0].stop_sec == 5.0
         assert slides[1].start_sec == 5.0
 
-    def test_trigger_time_format_derives_stop_from_next_start(self):
+    def test_trigger_time_format_legacy_scalar_derives_stop(self):
         p = self._write(_TRIGGER_TIME_JSON)
         slides, _, _ = load_ground_truth(p)
         assert len(slides) == 3
         assert slides[0].stop_sec == 3.0
         assert slides[1].stop_sec == 6.0
-        # last slide stop_sec = 0.0 (sentinel)
-        assert slides[2].stop_sec == 0.0
+        assert slides[2].stop_sec == 0.0  # sentinel
+
+    def test_trigger_time_list_expands_to_one_entry_per_occurrence(self):
+        p = self._write(_REPEATED_SLIDE_JSON)
+        slides, _, _ = load_ground_truth(p)
+        # verse one (t=0), chorus (t=10), verse two (t=20), chorus (t=30), chorus (t=50)
+        assert len(slides) == 5
+
+    def test_repeated_slide_entries_sorted_chronologically(self):
+        p = self._write(_REPEATED_SLIDE_JSON)
+        slides, _, _ = load_ground_truth(p)
+        starts = [s.start_sec for s in slides]
+        assert starts == sorted(starts)
+
+    def test_repeated_slide_stop_derived_from_next_entry(self):
+        p = self._write(_REPEATED_SLIDE_JSON)
+        slides, _, _ = load_ground_truth(p)
+        # t=0 (verse1) stop → 10.0 (first chorus start)
+        assert slides[0].stop_sec == 10.0
+        # t=10 (chorus) stop → 20.0 (verse2 start)
+        assert slides[1].stop_sec == 20.0
+        # t=20 (verse2) stop → 30.0 (second chorus start)
+        assert slides[2].stop_sec == 30.0
+
+    def test_repeated_slide_same_idx_different_start(self):
+        p = self._write(_REPEATED_SLIDE_JSON)
+        slides, _, _ = load_ground_truth(p)
+        chorus_entries = [s for s in slides if s.text == "chorus text"]
+        assert len(chorus_entries) == 3
+        # All share the same ProPresenter slide index
+        assert len({s.idx for s in chorus_entries}) == 1
+        # But each has a distinct start time
+        assert len({s.start_sec for s in chorus_entries}) == 3
 
     def test_disabled_slides_excluded(self):
         p = self._write(_START_STOP_JSON)
@@ -187,10 +242,10 @@ class TestAccuracyEvaluator:
 
     def test_correct_step_count(self):
         gt = _gt((0.0, 6.0, "hello world"))
-        # window=2, audio=6s → 3 sequential non-overlapping chunks (t=2, t=4, t=6)
+        # window=2s, poll=1s, audio=6s → 6 sliding windows (t=1,2,3,4,5,6)
         result = self._run(gt, audio_seconds=6.0, window=2.0, poll=1.0,
                            transcribe_returns="hello world something")
-        assert result.total_steps == 3
+        assert result.total_steps == 6
 
     def test_all_correct_when_embedder_always_right(self):
         gt = _gt((0.0, 6.0, "hello world"))

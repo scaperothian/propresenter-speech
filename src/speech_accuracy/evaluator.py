@@ -4,9 +4,9 @@ Ground-truth loader and evaluation engine for speech-accuracy.
 Evaluation strategy
 -------------------
 AccuracyEvaluator feeds an audio file through the real AudioPipeline
-(interactive=False) with an AccuracyHandler in place of the normal slide-cue
-handler.  This means evaluation uses exactly the same Whisper transcription
-loop, word buffer, and chunk sizing as production follow-enhanced mode.
+with an AccuracyHandler in place of the normal slide-cue handler.  This means
+evaluation uses exactly the same Whisper transcription loop, word buffer, and
+chunk sizing as production follow-enhanced mode.
 
 Timing: T_snap
 --------------
@@ -24,14 +24,13 @@ snapshotted, not the current moment.
 Consequence for accuracy measurement: ground-truth lookup uses the exact audio
 position the model was reasoning about, independent of how long inference took.
 
-File-mode chunking (sequential, non-overlapping)
--------------------------------------------------
-AudioPipeline._run_file() processes non-overlapping window_seconds chunks.
-For a 3-minute file at window_seconds=2.0 this is 90 Whisper calls, not the
-~891 calls of an overlapping 0.2s-step simulation.  This is intentional:
-sequential chunking is fast and covers the full file without gaps.  Overlapping
-simulation (matching mic ring-buffer behaviour) is a future improvement tracked
-separately.
+File-mode chunking (sliding window)
+-------------------------------------
+AudioPipeline._run_file() advances by poll_interval each step and transcribes
+the trailing window_seconds of audio — identical to mic mode's ring buffer.
+For a 3-minute file at window_seconds=2.0, poll_interval=0.2 this is 900 calls;
+at poll_interval=0.05 it is 3,600 calls.  Unlike mic mode there is no
+_whisper_busy throttle, so every step is evaluated regardless of Whisper speed.
 
 Ground-truth JSON schema (../propresenter-train/output/)
 ---------------------------------------------------------
@@ -51,7 +50,7 @@ from pathlib import Path
 from typing import Optional
 
 from propresenter_speech.audio_pipeline import AudioPipeline, DEFAULT_WINDOW_SECONDS, DEFAULT_POLL_INTERVAL
-from propresenter_speech.slide_embedder import SlideEmbedder
+from propresenter_speech.slide_embedder import SlideEmbedder, WordWindowEmbedder
 from propresenter_speech.transcriber import Transcriber
 
 logger = logging.getLogger(__name__)
@@ -120,8 +119,14 @@ def load_ground_truth(json_path: str | Path) -> tuple[list[GroundTruthSlide], st
     """
     Parse a propresenter-train JSON file.
 
+    Time values ("trigger time", "start time", "stop time") may be a list of
+    floats (new format — one entry per occurrence of the slide in the song) or
+    a single float (legacy format).  Each occurrence expands into its own
+    GroundTruthSlide entry so repeated sections (choruses) are represented as
+    distinct entries in chronological order.
+
     Returns:
-        slides      — list of GroundTruthSlide (enabled only, normalised timing)
+        slides      — list of GroundTruthSlide sorted by start_sec
         audio_path  — absolute path to the audio file
         name        — presentation name
     """
@@ -135,22 +140,41 @@ def load_ground_truth(json_path: str | Path) -> tuple[list[GroundTruthSlide], st
     raw_slides = [s for g in pres["groups"] for s in g["slides"]]
     enabled = [s for s in raw_slides if s.get("enabled", True)]
 
-    slides: list[GroundTruthSlide] = []
+    # Accumulate (start_sec, stop_sec, idx, text) — one tuple per occurrence.
+    # stop_sec=0.0 is the sentinel meaning "derive from next entry".
+    raw_entries: list[tuple[float, float, int, str]] = []
+
     for i, s in enumerate(enabled):
         text = s.get("text", "").strip()
         if not text:
             continue
 
         if "start time" in s:
-            start = float(s["start time"])
-            stop = float(s.get("stop time", 0.0))
+            starts = s["start time"]
+            if not isinstance(starts, list):
+                starts = [starts]
+            stops_raw = s.get("stop time", [])
+            if not isinstance(stops_raw, list):
+                stops_raw = [stops_raw]
+            for j, start in enumerate(starts):
+                stop = float(stops_raw[j]) if j < len(stops_raw) else 0.0
+                raw_entries.append((float(start), stop, i, text))
         else:
-            start = float(s["trigger time"])
-            stop = 0.0  # filled in below
+            triggers = s["trigger time"]
+            if not isinstance(triggers, list):
+                triggers = [triggers]
+            for t in triggers:
+                raw_entries.append((float(t), 0.0, i, text))
 
-        slides.append(GroundTruthSlide(idx=i, text=text, start_sec=start, stop_sec=stop))
+    # Sort chronologically so repeated sections appear in playback order.
+    raw_entries.sort(key=lambda e: e[0])
 
-    # For trigger-time files (no stop time) derive stop from next slide's start
+    slides: list[GroundTruthSlide] = [
+        GroundTruthSlide(idx=idx, text=text, start_sec=start, stop_sec=stop)
+        for start, stop, idx, text in raw_entries
+    ]
+
+    # Derive stop_sec from the next entry's start for trigger-time occurrences.
     for j in range(len(slides) - 1):
         if slides[j].stop_sec == 0.0:
             slides[j].stop_sec = slides[j + 1].start_sec
@@ -179,25 +203,30 @@ class AccuracyHandler:
     """
     Drop-in ModeHandler that records inference accuracy instead of cueing slides.
 
-    Plugged into AudioPipeline(interactive=False) in place of the normal
-    follow-enhanced handler.  Receives audio_time (T_snap) via on_transcription()
-    and uses it for exact ground-truth lookup.
+    Plugged into AudioPipeline in place of the normal follow-enhanced handler.
+    Receives audio_time (T_snap) via on_transcription() and uses it for exact
+    ground-truth lookup.
     """
 
     def __init__(
         self,
         ground_truth: list[GroundTruthSlide],
-        embedder: SlideEmbedder,
+        embedder: SlideEmbedder | WordWindowEmbedder,
         context_words: int,
         audio_duration: float,
+        similarity_threshold: float = 0.4,
+        min_margin: float = 0.15,
         verbose: bool = False,
     ):
         self.ground_truth = ground_truth
         self.embedder = embedder
         self.context_words = context_words
         self.audio_duration = audio_duration
+        self.similarity_threshold = similarity_threshold
+        self.min_margin = min_margin
         self.verbose = verbose
         self.events: list[InferenceEvent] = []
+        self._current_pred_idx: int = -1
 
     def on_startup(self) -> None:
         pass
@@ -214,11 +243,18 @@ class AccuracyHandler:
         query_words = list(word_buffer)[-self.context_words:]
         query = " ".join(query_words) if len(query_words) >= 2 else ""
 
-        pred_idx, confidence, margin = (
+        raw_idx, confidence, margin = (
             self.embedder.find_slide_with_margin(query)
             if query
             else (-1, 0.0, 0.0)
         )
+
+        # Mirror FollowEnhancedHandler's gate: only update the current predicted
+        # slide when the match clears at least one threshold.  Below both thresholds
+        # the prediction stays on the last accepted slide, same as live behaviour.
+        if confidence >= self.similarity_threshold or margin >= self.min_margin:
+            self._current_pred_idx = raw_idx
+        pred_idx = self._current_pred_idx
 
         gt = ground_truth_at(self.ground_truth, audio_time, self.audio_duration)
         gt_idx = gt.idx if gt is not None else -1
@@ -260,7 +296,7 @@ class AccuracyEvaluator:
     def __init__(
         self,
         transcriber: Transcriber,
-        embedder: SlideEmbedder,
+        embedder: SlideEmbedder | WordWindowEmbedder,
         ground_truth: list[GroundTruthSlide],
         context_words: int,
         window_seconds: float = DEFAULT_WINDOW_SECONDS,
@@ -291,18 +327,17 @@ class AccuracyEvaluator:
             embedder=self.embedder,
             context_words=self.context_words,
             audio_duration=audio_duration,
+            similarity_threshold=self.similarity_threshold,
+            min_margin=self.min_margin,
             verbose=self.verbose,
         )
 
-        # interactive=False: _run_file() returns after the last chunk without
-        # waiting for keyboard input, so evaluate() can collect results immediately.
         AudioPipeline(
             transcriber=self.transcriber,
             handler=handler,
             audio_file=audio_path,
             window_seconds=self.window_seconds,
             poll_interval=self.poll_interval,
-            interactive=False,
         ).run()
 
         return self._build_result(
@@ -325,7 +360,13 @@ class AccuracyEvaluator:
 
         per_slide: list[SlideMetrics] = []
         for slide in self.ground_truth:
-            slide_events = [e for e in events if e.gt_slide_idx == slide.idx]
+            # Scope to this occurrence's time window so that repeated slides
+            # (choruses) produce separate metrics rather than being merged.
+            stop = slide.stop_sec if slide.stop_sec > 0.0 else float("inf")
+            slide_events = [
+                e for e in events
+                if e.gt_slide_idx == slide.idx and slide.start_sec <= e.audio_time < stop
+            ]
             slide_correct = sum(1 for e in slide_events if e.is_correct)
             first_hit = next((e for e in slide_events if e.is_correct), None)
             latency = (

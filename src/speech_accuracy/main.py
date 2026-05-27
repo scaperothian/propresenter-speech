@@ -26,7 +26,7 @@ from .evaluator import (
 )
 from propresenter_speech.audio_pipeline import DEFAULT_POLL_INTERVAL, DEFAULT_WINDOW_SECONDS
 from propresenter_speech.handlers.follow_enhanced import DEFAULT_MIN_MARGIN, DEFAULT_SIMILARITY_THRESHOLD
-from propresenter_speech.slide_embedder import SlideEmbedder
+from propresenter_speech.slide_embedder import SlideEmbedder, WordWindowEmbedder
 from propresenter_speech.transcriber import Transcriber
 
 
@@ -123,6 +123,25 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
             "(default: speech_accuracy_<name>_<timestamp>.log)"
         ),
     )
+    parser.add_argument(
+        "--embedding-mode",
+        default="slide",
+        choices=["slide", "word-window"],
+        dest="embedding_mode",
+        help=(
+            "slide: one embedding per slide (default)\n"
+            "word-window: one embedding per word position — finer resolution,\n"
+            "             slides sorted by timestamp so choruses appear in order"
+        ),
+    )
+    parser.add_argument(
+        "--embedding-stride",
+        type=int,
+        default=1,
+        dest="embedding_stride",
+        metavar="N",
+        help="(word-window mode) words to advance between successive windows (default: 1)",
+    )
     parser.add_argument("--verbose", action="store_true", help="Print every inference step to stdout")
     parser.add_argument(
         "--log-level",
@@ -139,14 +158,26 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
 def _build_evaluator(ground_truth, args) -> tuple[AccuracyEvaluator, Transcriber, int]:
     slide_texts = [s.text for s in ground_truth]
 
-    embedder = SlideEmbedder()
-    embedder.load()
-    embedder.build(slide_texts)
-
     context_words = args.context_words
     if context_words is None:
-        context_words = embedder.avg_words_per_slide
+        total_words = sum(len(t.split()) for t in slide_texts)
+        context_words = max(1, round(total_words / len(slide_texts)))
         print(f"Context words: {context_words} (avg words/slide)")
+
+    if args.embedding_mode == "word-window":
+        from propresenter_speech.slide_embedder import WordWindowEmbedder
+        # Sort by start_sec so repeated sections (choruses) appear in the word
+        # continuum in chronological playback order, not slide-list order.
+        ordered = sorted(ground_truth, key=lambda s: s.start_sec)
+        embedder: SlideEmbedder | WordWindowEmbedder = WordWindowEmbedder(
+            stride=args.embedding_stride
+        )
+        embedder.load()
+        embedder.build([(s.idx, s.text) for s in ordered], context_words=context_words)
+    else:
+        embedder = SlideEmbedder()
+        embedder.load()
+        embedder.build(slide_texts, slide_indices=[s.idx for s in ground_truth])
 
     transcriber = Transcriber(model_name=args.model)
     transcriber.load()
@@ -171,7 +202,14 @@ def _default_log_path(name: str) -> str:
     return f"speech_accuracy_{safe}_{ts}.log"
 
 
-def _write_result_jsonl(result: EvaluationResult, log_path: str) -> None:
+def _write_result_jsonl(
+    result: EvaluationResult,
+    log_path: str,
+    gt_path: str = "",
+    embedding_mode: str = "",
+    similarity_threshold: float = 0.4,
+    min_margin: float = 0.15,
+) -> None:
     """Append all inference events + a summary record to the JSONL log."""
     with open(log_path, "a", encoding="utf-8") as f:
         for event in result.events:
@@ -179,10 +217,15 @@ def _write_result_jsonl(result: EvaluationResult, log_path: str) -> None:
         summary = {
             "record_type": "summary",
             "presentation": result.presentation_name,
+            "audio_file": result.audio_path,
+            "ground_truth_file": gt_path,
+            "embedding_mode": embedding_mode,
             "model": result.model_name,
             "window_seconds": result.window_seconds,
             "poll_interval": result.poll_interval,
             "context_words": result.context_words,
+            "similarity_threshold": similarity_threshold,
+            "min_margin": min_margin,
             "total_steps": result.total_steps,
             "correct_steps": result.correct_steps,
             "inference_accuracy": result.inference_accuracy,
@@ -246,7 +289,13 @@ def speech_accuracy_main() -> None:
 
     result = evaluator.evaluate(audio_path, name, args.model)
 
-    _write_result_jsonl(result, log_path)
+    _write_result_jsonl(
+        result, log_path,
+        gt_path=str(gt_path),
+        embedding_mode=args.embedding_mode,
+        similarity_threshold=args.similarity_threshold,
+        min_margin=args.min_margin,
+    )
     print_summary(result)
     print(f"Full event log: {log_path}")
 
@@ -332,7 +381,13 @@ def evaluate_all_main() -> None:
         print(f"  Logging to: {log_path}")
 
         result = evaluator.evaluate(audio_path, name, args.model)
-        _write_result_jsonl(result, log_path)
+        _write_result_jsonl(
+            result, log_path,
+            gt_path=str(gt_path),
+            embedding_mode=args.embedding_mode,
+            similarity_threshold=args.similarity_threshold,
+            min_margin=args.min_margin,
+        )
         print_summary(result)
         results.append(result)
 

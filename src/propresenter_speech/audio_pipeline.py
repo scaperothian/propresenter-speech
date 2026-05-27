@@ -10,7 +10,7 @@ Mic mode:
             Transcriber → ModeHandler.on_transcription(text, word_buffer)
 
 File mode:
-  audio file → non-overlapping window_seconds chunks (sequential, no ring buffer)
+  audio file → sliding window (window_seconds wide, advances by poll_interval)
                 ▼
             Transcriber → ModeHandler.on_transcription(text, word_buffer)
 """
@@ -124,9 +124,12 @@ class AudioPipeline:
             if self._whisper_busy or len(self._ring) < SAMPLE_RATE * 0.5:
                 continue
             audio = np.array(list(self._ring), dtype=np.float32)
+            # Mic mode has no file position, so audio_time is 0.0.
+            # Handlers that need positional information (AccuracyHandler) only
+            # run against files, where _run_file() passes a frame-derived T_snap.
             threading.Thread(
                 target=self._process,
-                args=(audio,),
+                args=(audio, 0.0),
                 daemon=True,
                 name="pipeline-whisper",
             ).start()
@@ -163,31 +166,37 @@ class AudioPipeline:
             logger.info("Resampling from %d Hz to %d Hz", sample_rate, SAMPLE_RATE)
             audio = _resample(audio_orig, sample_rate, SAMPLE_RATE)
 
-        chunks = [
-            audio[s : s + self._window_frames]
-            for s in range(0, len(audio), self._window_frames)
-            if len(audio[s : s + self._window_frames]) >= SAMPLE_RATE * 0.5
-        ]
-        with tqdm(total=int(duration), unit="s", desc="Processing", ncols=70) as bar:
-            for chunk in chunks:
-                if not self._running:
+        poll_frames = int(self.poll_interval * SAMPLE_RATE)
+        min_frames = int(SAMPLE_RATE * 0.5)
+        total_frames = len(audio)
+
+        # Sliding window: advance by poll_frames each step, always transcribe
+        # the trailing window_frames.  Mirrors mic mode's ring buffer exactly —
+        # poll_interval controls step size, window_seconds controls context depth.
+        with tqdm(total=int(duration), unit="s", desc="Processing", ncols=70) as progress:
+            end = poll_frames
+            while self._running:
+                end = min(end, total_frames)
+                chunk = audio[max(0, end - self._window_frames) : end]
+                if len(chunk) >= min_frames:
+                    self._process(chunk, end / SAMPLE_RATE)
+                progress.n = int(end / SAMPLE_RATE)
+                progress.refresh()
+                if end >= total_frames:
                     break
-                chunk_secs = len(chunk) / SAMPLE_RATE
-                time.sleep(chunk_secs)
-                self._process(chunk)
-                bar.update(int(chunk_secs))
+                end += poll_frames
 
         if self.playback:
             sd.stop()
-
-        print("\nFile processing complete. Press 'q' + Enter to stop.")
-        self._wait_for_stop()
 
     # ------------------------------------------------------------------
     # Shared transcription
     # ------------------------------------------------------------------
 
-    def _process(self, audio: np.ndarray) -> None:
+    def _process(self, audio: np.ndarray, audio_time: float = 0.0) -> None:
+        # audio_time is T_snap for file mode (end of transcribed window, frames-derived),
+        # or 0.0 for mic mode.  Forwarded verbatim to on_transcription() so handlers
+        # can use it for ground-truth lookup without any latency correction.
         self._whisper_busy = True
         try:
             text = self.transcriber.transcribe(audio)
@@ -196,7 +205,7 @@ class AudioPipeline:
             if self.verbose:
                 print(f"  heard: {text!r}")
             self._word_buffer.extend(extract_words(text))
-            self.handler.on_transcription(text, self._word_buffer)
+            self.handler.on_transcription(text, self._word_buffer, audio_time)
         finally:
             self._whisper_busy = False
 

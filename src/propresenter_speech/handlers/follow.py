@@ -46,7 +46,8 @@ class FollowHandler:
             "Explicit commands ('next slide', 'previous slide', 'go to slide N') also work."
         )
 
-    def on_transcription(self, text: str, word_buffer: deque) -> None:
+    def on_transcription(self, text: str, word_buffer: deque, audio_time: float = 0.0) -> None:
+        # audio_time is unused; follow mode advances based on trigger words, not position.
         command = self.command_parser.parse(text)
         if command.type != CommandType.UNKNOWN:
             if time.monotonic() - self._last_advance < COMMAND_COOLDOWN:

@@ -110,6 +110,11 @@ Operation mode:
                         (follow-enhanced) minimum score to trigger a slide cue (default: 0.4)
   --min-margin FLOAT    (follow-enhanced) minimum gap between best and second-best score
                         to trigger even when below --similarity-threshold (default: 0.15)
+  --embedding-mode {slide,word-window}
+                        slide: one embedding per slide (default)
+                        word-window: one embedding per word position — finer resolution,
+                                     better for repeated sections (choruses)
+  --embedding-stride N  (word-window) words to advance between successive windows (default: 1)
 
 Whisper ASR:
   --model {tiny,base,small,medium,large}
@@ -153,6 +158,10 @@ poetry run propresenter-speech --mode follow-enhanced
 
 # Follow-enhanced with stricter matching or explicit context window override
 poetry run propresenter-speech --mode follow-enhanced --similarity-threshold 0.55 --context-words 8
+
+# Follow-enhanced with word-window embedder (better for songs with repeated choruses)
+poetry run propresenter-speech --mode follow-enhanced --embedding-mode word-window
+poetry run propresenter-speech --mode follow-enhanced --embedding-mode word-window --embedding-stride 2
 
 # Use a more accurate model
 poetry run propresenter-speech --model small
@@ -262,6 +271,54 @@ by default, so `base` typically responds in under 1 second on Apple Silicon.
 **"go to slide" picks up the wrong number**  
 Speak clearly and pause briefly after the number.  You can also try `--model small`
 for better word-error rate on numbers.
+
+---
+
+## Accuracy evaluation
+
+The `speech-accuracy`, `speech-accuracy-batch`, and `speech-accuracy-plot` CLI tools measure
+and visualise how well the follow-enhanced pipeline matches slides against ground-truth timing
+data from [`propresenter-train`](../propresenter-train).
+
+The audio pipeline runs in sliding-window mode: advances by `--poll-interval` each step and
+always transcribes the trailing `--window-seconds` of audio — identical to live mic mode.
+Prediction gating mirrors `follow-enhanced`: the predicted slide only changes when
+`confidence >= --similarity-threshold` **or** `margin >= --min-margin`.
+
+```bash
+# Evaluate a single presentation (slide embedder, default)
+poetry run speech-accuracy \
+  --ground-truth ../propresenter-train/output/"Mary Had A Little Lamb.json"
+
+# Evaluate with word-window embedder (better for songs with choruses)
+poetry run speech-accuracy \
+  --ground-truth ../propresenter-train/output/"Drive.json" \
+  --embedding-mode word-window --model base --verbose
+
+# Batch evaluate every presentation in a directory
+poetry run speech-accuracy-batch \
+  --ground-truth-dir ../propresenter-train/output/ --model base
+
+# Visualise a results log (waveform + confidence + margin + predicted slide)
+poetry run speech-accuracy-plot --log speech_accuracy_Drive_20260525_154626.log
+poetry run speech-accuracy-plot --log results.log --output plot.png
+```
+
+Each run produces a JSONL `.log` file (one object per inference step + a summary record)
+and a printed accuracy table.  The summary record includes the audio file path, ground-truth
+JSON path, embedding mode, and threshold values so logs are self-contained.
+
+See [docs/speech-accuracy.md](docs/speech-accuracy.md) for the full reference.
+
+### Whisper benchmark
+
+`tools/benchmark_whisper.py` is a standalone script that measures per-call latency and
+real-time factor (RTF) for every Whisper model size.  No project dependencies required.
+
+```bash
+python tools/benchmark_whisper.py
+python tools/benchmark_whisper.py --models tiny base small --duration 3.0 --runs 10
+```
 
 ---
 

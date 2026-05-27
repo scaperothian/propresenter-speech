@@ -8,7 +8,7 @@ DEFAULT_MIN_MARGIN = 0.15
 
 from propresenter_client.main import ProPresenterController
 
-from ..slide_embedder import SlideEmbedder
+from ..slide_embedder import SlideEmbedder, WordWindowEmbedder
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class FollowEnhancedHandler:
     def __init__(
         self,
         pro_controller: ProPresenterController,
-        slide_embedder: SlideEmbedder,
+        slide_embedder: SlideEmbedder | WordWindowEmbedder,
         context_words: int = 3,
         similarity_threshold: float = 0.4,
         min_margin: float = 0.15,
@@ -48,7 +48,8 @@ class FollowEnhancedHandler:
             f"min_margin={self.min_margin:.2f}"
         )
 
-    def on_transcription(self, _text: str, word_buffer: deque) -> None:
+    def on_transcription(self, _text: str, word_buffer: deque, audio_time: float = 0.0) -> None:
+        # audio_time is unused; follow-enhanced matches by embedding similarity, not position.
         query_words = list(word_buffer)[-self.context_words :]
         if len(query_words) < 2:
             return

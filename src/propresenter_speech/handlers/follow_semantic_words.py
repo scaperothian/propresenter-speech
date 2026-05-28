@@ -1,7 +1,7 @@
 import logging
 from typing import Optional
 
-from ..predictor import TranscriptionResult
+from ..predictors import TranscriptionResult
 
 DEFAULT_CONTEXT_WORDS = 3
 DEFAULT_SIMILARITY_THRESHOLD = 0.4
@@ -14,7 +14,7 @@ from ..slide_embedder import SlideEmbedder, WordWindowEmbedder
 logger = logging.getLogger(__name__)
 
 
-class FollowEnhancedHandler:
+class FollowSemanticWordsHandler:
     """
     Cues whichever slide best matches the most recent spoken words via
     sentence-transformer cosine similarity.  Can jump to any slide freely.
@@ -43,7 +43,7 @@ class FollowEnhancedHandler:
 
     def startup_description(self) -> str:
         return (
-            f"Follow-enhanced mode active — semantic matching, "
+            f"Follow-semantic-words mode active — semantic matching, "
             f"context={self.context_words} words, "
             f"threshold={self.similarity_threshold:.2f}, "
             f"min_margin={self.min_margin:.2f}"

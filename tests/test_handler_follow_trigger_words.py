@@ -1,5 +1,5 @@
 """
-Unit tests for FollowHandler.
+Unit tests for FollowTriggerWordsHandler.
 No network, audio hardware, or Whisper model required.
 """
 
@@ -7,11 +7,11 @@ from collections import deque
 from unittest.mock import MagicMock, patch
 
 from propresenter_speech.command_parser import Command, CommandType
-from propresenter_speech.handlers.follow import FollowHandler
-from propresenter_speech.predictor import TranscriptionResult
+from propresenter_speech.handlers.follow_trigger_words import FollowTriggerWordsHandler
+from propresenter_speech.predictors import TranscriptionResult
 
 
-def _make_handler(**kwargs) -> FollowHandler:
+def _make_handler(**kwargs) -> FollowTriggerWordsHandler:
     follower = MagicMock()
     follower.has_triggers = True
     follower.trigger_words = ["grace"]
@@ -26,7 +26,7 @@ def _make_handler(**kwargs) -> FollowHandler:
         "verbose": False,
     }
     defaults.update(kwargs)
-    h = FollowHandler(**defaults)
+    h = FollowTriggerWordsHandler(**defaults)
     h.pro_controller.next_slide.return_value = True
     return h
 
@@ -66,7 +66,7 @@ class TestTriggerMatching:
         h.slide_follower.matches.return_value = True
         h.command_parser.parse.return_value = Command(CommandType.UNKNOWN)
         h.on_prediction(_result("grace"))
-        assert "follow" in capsys.readouterr().out.lower()
+        assert "follow-trigger-words" in capsys.readouterr().out.lower()
 
     def test_no_triggers_calls_refresh_before_matching(self):
         h = _make_handler()

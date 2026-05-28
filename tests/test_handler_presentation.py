@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 from propresenter_speech.command_parser import Command, CommandType
 from propresenter_speech.handlers.presentation import PresentationHandler
-from propresenter_speech.predictor import TranscriptionResult
+from propresenter_speech.predictors import TranscriptionResult
 
 
 def _make_handler(**kwargs) -> PresentationHandler:

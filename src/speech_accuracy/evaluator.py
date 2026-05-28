@@ -6,7 +6,7 @@ Evaluation strategy
 AccuracyEvaluator feeds an audio file through FilePipeline with an
 AccuracyHandler in place of the normal slide-cue handler.  This means
 evaluation uses exactly the same Whisper transcription loop, word buffer, and
-chunk sizing as production follow-enhanced mode.
+chunk sizing as production follow-semantic-words mode.
 
 Timing: T_snap
 --------------
@@ -36,7 +36,7 @@ Ground-truth JSON schema (../propresenter-train/output/)
 Two timing variants are normalised to a unified list:
   - "start time" / "stop time"   (Mary Had A Little Lamb, Your Way Is Better)
   - "trigger time" only          (The Pledge of Allegiance)
-Slides with enabled=false are excluded, matching follow-enhanced startup.
+Slides with enabled=false are excluded, matching follow-semantic-words startup.
 """
 
 from __future__ import annotations
@@ -50,8 +50,7 @@ from typing import Optional
 
 from propresenter_speech.audio_pipeline import DEFAULT_WINDOW_SECONDS, DEFAULT_POLL_INTERVAL
 from propresenter_speech.file_pipeline import FilePipeline
-from propresenter_speech.predictor import TranscriptionResult
-from propresenter_speech.whisper_predictor import WhisperPredictor
+from propresenter_speech.predictors import TranscriptionResult, WhisperPredictor
 from propresenter_speech.slide_embedder import SlideEmbedder, WordWindowEmbedder
 from propresenter_speech.transcriber import Transcriber
 
@@ -205,7 +204,7 @@ class AccuracyHandler:
     """
     Drop-in ModeHandler that records inference accuracy instead of cueing slides.
 
-    Plugged into AudioPipeline in place of the normal follow-enhanced handler.
+    Plugged into AudioPipeline in place of the normal follow-semantic-words handler.
     Receives audio_time (T_snap) via on_transcription() and uses it for exact
     ground-truth lookup.
     """

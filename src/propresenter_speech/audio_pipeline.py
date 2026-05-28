@@ -26,7 +26,7 @@ import sounddevice as sd
 
 if TYPE_CHECKING:
     from .handlers.base import ModeHandler
-    from .predictor import Predictor
+    from .predictors import Predictor
 
 logger = logging.getLogger(__name__)
 

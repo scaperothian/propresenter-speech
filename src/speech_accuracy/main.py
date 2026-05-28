@@ -1,7 +1,7 @@
 """
 CLI entry point for speech-accuracy.
 
-Evaluates follow-enhanced slide matching accuracy against a propresenter-train
+Evaluates follow-semantic-words slide matching accuracy against a propresenter-train
 ground-truth JSON file.
 
 Usage:
@@ -25,7 +25,7 @@ from .evaluator import (
     print_summary,
 )
 from propresenter_speech.audio_pipeline import DEFAULT_POLL_INTERVAL, DEFAULT_WINDOW_SECONDS
-from propresenter_speech.handlers.follow_enhanced import DEFAULT_MIN_MARGIN, DEFAULT_SIMILARITY_THRESHOLD
+from propresenter_speech.handlers.follow_semantic_words import DEFAULT_MIN_MARGIN, DEFAULT_SIMILARITY_THRESHOLD
 from propresenter_speech.slide_embedder import SlideEmbedder, WordWindowEmbedder
 from propresenter_speech.transcriber import Transcriber
 
@@ -248,7 +248,7 @@ def speech_accuracy_main() -> None:
 
     parser = argparse.ArgumentParser(
         prog="speech-accuracy",
-        description="Evaluate follow-enhanced slide matching against a ground-truth JSON file.",
+        description="Evaluate follow-semantic-words slide matching against a ground-truth JSON file.",
         formatter_class=_Formatter,
     )
     parser.add_argument(

@@ -1,5 +1,5 @@
 """
-Unit tests for FollowEnhancedHandler.
+Unit tests for FollowSemanticWordsHandler.
 No network, audio hardware, or Whisper model required.
 """
 
@@ -7,11 +7,11 @@ import pytest
 from collections import deque
 from unittest.mock import MagicMock
 
-from propresenter_speech.handlers.follow_enhanced import FollowEnhancedHandler
-from propresenter_speech.predictor import TranscriptionResult
+from propresenter_speech.handlers.follow_semantic_words import FollowSemanticWordsHandler
+from propresenter_speech.predictors import TranscriptionResult
 
 
-def _make_handler(**kwargs) -> FollowEnhancedHandler:
+def _make_handler(**kwargs) -> FollowSemanticWordsHandler:
     defaults = {
         "pro_controller": MagicMock(),
         "slide_embedder": MagicMock(),
@@ -21,7 +21,7 @@ def _make_handler(**kwargs) -> FollowEnhancedHandler:
         "verbose": False,
     }
     defaults.update(kwargs)
-    h = FollowEnhancedHandler(**defaults)
+    h = FollowSemanticWordsHandler(**defaults)
     h.pro_controller.go_to_slide.return_value = True
     return h
 

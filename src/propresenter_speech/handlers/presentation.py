@@ -4,7 +4,7 @@ import time
 from propresenter_client.main import ProPresenterController
 
 from ..audio_pipeline import COMMAND_COOLDOWN
-from ..predictor import TranscriptionResult
+from ..predictors import TranscriptionResult
 from ..command_parser import Command, CommandParser, CommandType
 
 logger = logging.getLogger(__name__)

@@ -4,9 +4,9 @@ CLI entry point for propresenter-speech.
 Usage examples:
   propresenter-speech
   propresenter-speech --presentation "Sermon Slides"
-  propresenter-speech --presentation "Worship" --library Songs --mode follow
-  propresenter-speech --mode follow --trigger-words 2
-  propresenter-speech --mode follow-enhanced
+  propresenter-speech --presentation "Worship" --library Songs --mode follow-trigger-words
+  propresenter-speech --mode follow-trigger-words --trigger-words 2
+  propresenter-speech --mode follow-semantic-words
   propresenter-speech --host 192.168.1.10 --port 1025 --model small --verbose
   propresenter-speech --list-devices
 """
@@ -24,10 +24,15 @@ from .audio_pipeline import (
     list_input_devices,
     list_output_devices,
 )
-from .whisper_predictor import WhisperPredictor
+from .predictors import Wav2VecAltPredictor, Wav2VecPredictor, WhisperPredictor, MERTPredictor
 from .command_parser import CommandParser
-from .handlers import FollowEnhancedHandler, FollowHandler, PresentationHandler
-from .handlers.follow_enhanced import (
+from .handlers import (
+    FollowSemanticAudioHandler,
+    FollowSemanticWordsHandler,
+    FollowTriggerWordsHandler,
+    PresentationHandler,
+)
+from .handlers.follow_semantic_words import (
     DEFAULT_MIN_MARGIN,
     DEFAULT_SIMILARITY_THRESHOLD,
 )
@@ -71,11 +76,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     mode_grp.add_argument(
         "--mode",
         default="presentation",
-        choices=["presentation", "follow", "follow-enhanced"],
+        choices=["presentation", "follow-trigger-words", "follow-semantic-words", "follow-semantic-audio"],
         help=(
-            "presentation:    respond to explicit voice commands only\n"
-            "follow:          auto-advance on slide trigger words + explicit commands\n"
-            "follow-enhanced: semantic embedding search — cues whichever slide best matches recent speech"
+            "presentation:          respond to explicit voice commands only\n"
+            "follow-trigger-words:  auto-advance on trigger words near the end of each slide + explicit commands\n"
+            "follow-semantic-words: semantic text embedding search — cues whichever slide best matches recent speech\n"
+            "follow-semantic-audio: MERT audio embedding search — cues whichever slide best matches live audio"
         ),
     )
     mode_grp.add_argument(
@@ -84,7 +90,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=2,
         dest="trigger_words",
         metavar="N",
-        help="(follow mode) number of words to use as trigger phrase",
+        help="(follow-trigger-words) number of words to use as trigger phrase",
     )
     mode_grp.add_argument(
         "--trigger-index",
@@ -92,7 +98,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=-2,
         dest="trigger_index",
         metavar="I",
-        help="(follow mode) pythonic index of the anchor (last) trigger word; -2 = second-to-last word (default)",
+        help="(follow-trigger-words) pythonic index of the anchor (last) trigger word; -2 = second-to-last word (default)",
     )
     mode_grp.add_argument(
         "--context-words",
@@ -101,7 +107,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         dest="context_words",
         metavar="N",
         help=(
-            "(follow-enhanced) recent spoken words to form the query n-gram\n"
+            "(follow-semantic-words) recent spoken words to form the query n-gram\n"
             "(default: avg words/slide, computed from the loaded presentation)"
         ),
     )
@@ -111,7 +117,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=["slide", "word-window"],
         dest="embedding_mode",
         help=(
-            "(follow-enhanced) slide: one embedding per slide (default)\n"
+            "(follow-semantic-words) slide: one embedding per slide (default)\n"
             "word-window: one embedding per word position — finer resolution,\n"
             "             handles repeated sections (choruses) correctly"
         ),
@@ -123,7 +129,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         dest="embedding_stride",
         metavar="N",
         help=(
-            "(follow-enhanced, word-window mode) words to advance between\n"
+            "(follow-semantic, word-window mode) words to advance between\n"
             "successive windows; 1 = maximum resolution (default)"
         ),
     )
@@ -133,7 +139,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SIMILARITY_THRESHOLD,
         dest="similarity_threshold",
         metavar="FLOAT",
-        help="(follow-enhanced) minimum hybrid score to trigger a slide cue",
+        help="(follow-semantic-words) minimum hybrid score to trigger a slide cue",
     )
     mode_grp.add_argument(
         "--min-margin",
@@ -141,15 +147,46 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MIN_MARGIN,
         dest="min_margin",
         metavar="FLOAT",
-        help="(follow-enhanced) minimum gap between best and second-best score to trigger",
+        help="(follow-semantic-words) minimum gap between best and second-best score to trigger",
     )
 
-    whisper_grp = parser.add_argument_group("Whisper ASR")
-    whisper_grp.add_argument(
+    asr_grp = parser.add_argument_group("ASR backend")
+    asr_grp.add_argument(
+        "--asr-backend",
+        default="whisper",
+        choices=["whisper", "wav2vec2", "wav2vec2-alt"],
+        dest="asr_backend",
+        help=(
+            "whisper:      faster-whisper CTranslate2 (default)\n"
+            "wav2vec2:     HuggingFace Wav2Vec2ForCTC (requires --extras torch)\n"
+            "wav2vec2-alt: SpeechBrain ALT lyric-tuned checkpoint (requires --extras torch)"
+        ),
+    )
+    asr_grp.add_argument(
         "--model",
         default="base",
         choices=["tiny", "base", "small", "medium", "large"],
-        help="Whisper model size (smaller = faster, larger = more accurate)",
+        help="(whisper) Whisper model size (smaller = faster, larger = more accurate)",
+    )
+    asr_grp.add_argument(
+        "--wav2vec-ckpt-dir",
+        default=None,
+        dest="wav2vec_ckpt_dir",
+        metavar="PATH",
+        help=(
+            "(wav2vec2-alt) path to SpeechBrain CKPT+... directory containing\n"
+            "wav2vec2.ckpt and model.ckpt (default: auto-detected from sibling dir)"
+        ),
+    )
+    asr_grp.add_argument(
+        "--ground-truth",
+        default=None,
+        dest="ground_truth",
+        metavar="PATH",
+        help=(
+            "(follow-semantic-audio) path to propresenter-train ground-truth JSON;\n"
+            "used to build per-slide MERT prototype embeddings at startup"
+        ),
     )
 
     audio_grp = parser.add_argument_group("Audio pipeline")
@@ -226,7 +263,7 @@ def _fetch_slides(pro: ProPresenterController) -> list[tuple[int, str]]:
     return indexed_texts
 
 
-def _build_follow_enhanced_handler(pro: ProPresenterController, args) -> FollowEnhancedHandler:
+def _build_follow_semantic_words_handler(pro: ProPresenterController, args) -> FollowSemanticWordsHandler:
     indexed_texts = _fetch_slides(pro)
     slide_texts = [t for _, t in indexed_texts]
     total_slides = len(indexed_texts)
@@ -257,7 +294,7 @@ def _build_follow_enhanced_handler(pro: ProPresenterController, args) -> FollowE
         embedder.build(slide_texts, slide_indices=[i for i, _ in indexed_texts])
 
     print("Embeddings ready.")
-    return FollowEnhancedHandler(
+    return FollowSemanticWordsHandler(
         pro_controller=pro,
         slide_embedder=embedder,
         context_words=context_words,
@@ -266,6 +303,30 @@ def _build_follow_enhanced_handler(pro: ProPresenterController, args) -> FollowE
         verbose=args.verbose,
     )
 
+
+
+def _build_predictor(args):
+    backend = args.asr_backend
+    if backend == "wav2vec2":
+        print("Loading Wav2Vec2 model — this may take a moment on first run…")
+        predictor = Wav2VecPredictor(verbose=args.verbose)
+        predictor.load()
+        print("Wav2Vec2 ready.")
+        return predictor
+    if backend == "wav2vec2-alt":
+        from pathlib import Path
+        ckpt_dir = Path(args.wav2vec_ckpt_dir) if args.wav2vec_ckpt_dir else None
+        print("Loading Wav2Vec2-ALT model — this may take a moment on first run…")
+        predictor = Wav2VecAltPredictor(ckpt_dir=ckpt_dir, verbose=args.verbose)
+        predictor.load()
+        print("Wav2Vec2-ALT ready.")
+        return predictor
+    # default: whisper
+    print("Loading Whisper model — this may take a moment on first run…")
+    transcriber = Transcriber(model_name=args.model)
+    transcriber.load()
+    print("Whisper ready.")
+    return WhisperPredictor(transcriber, verbose=args.verbose)
 
 
 def main() -> None:
@@ -320,29 +381,47 @@ def main() -> None:
             sys.exit(1)
         print(f"Activated '{args.presentation}'.")
 
-    if mode == Mode.FOLLOW_ENHANCED:
-        handler = _build_follow_enhanced_handler(pro, args)
-    elif mode == Mode.FOLLOW:
-        handler = FollowHandler(
+    if mode == Mode.FOLLOW_SEMANTIC_AUDIO:
+        if not args.ground_truth:
+            print("Error: --ground-truth PATH is required for follow-semantic-audio mode.")
+            sys.exit(1)
+        print("Loading MERT model — this may take a moment on first run…")
+        mert = MERTPredictor(verbose=args.verbose)
+        mert.load()
+        print("MERT ready.")
+        handler = FollowSemanticAudioHandler(
             pro_controller=pro,
-            command_parser=CommandParser(),
-            slide_follower=SlideFollower(pro, trigger_word_count=args.trigger_words, trigger_index=args.trigger_index),
+            mert_predictor=mert,
+            ground_truth_path=args.ground_truth,
+            similarity_threshold=args.similarity_threshold,
+            min_margin=args.min_margin,
             verbose=args.verbose,
         )
+        predictor = mert
     else:
-        handler = PresentationHandler(
-            pro_controller=pro,
-            command_parser=CommandParser(),
-            verbose=args.verbose,
-        )
-
-    print("Loading Whisper model — this may take a moment on first run…")
-    transcriber = Transcriber(model_name=args.model)
-    transcriber.load()
-    print("Whisper ready.")
+        if mode == Mode.FOLLOW_SEMANTIC_WORDS:
+            handler = _build_follow_semantic_words_handler(pro, args)
+        elif mode == Mode.FOLLOW_TRIGGER_WORDS:
+            handler = FollowTriggerWordsHandler(
+                pro_controller=pro,
+                command_parser=CommandParser(),
+                slide_follower=SlideFollower(
+                    pro,
+                    trigger_word_count=args.trigger_words,
+                    trigger_index=args.trigger_index,
+                ),
+                verbose=args.verbose,
+            )
+        else:
+            handler = PresentationHandler(
+                pro_controller=pro,
+                command_parser=CommandParser(),
+                verbose=args.verbose,
+            )
+        predictor = _build_predictor(args)
 
     AudioPipeline(
-        predictor=WhisperPredictor(transcriber, verbose=args.verbose),
+        predictor=predictor,
         handler=handler,
         device=args.device,
         window_seconds=args.window_seconds,

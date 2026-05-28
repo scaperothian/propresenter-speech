@@ -86,16 +86,20 @@ def read_summary(log_path: Path) -> dict | None:
 
 # ─── Step runners ────────────────────────────────────────────────────────────
 
-def run_whisper(gt_json: Path, tag: str, model: str) -> Path:
-    log_path = RESULTS_DIR / f"whisper_{model}_{tag}.log"
-    png_path = RESULTS_DIR / f"whisper_{model}_{tag}.png"
+def run_whisper(gt_json: Path, tag: str, model: str, embedding_mode: str = "slide") -> Path:
+    mode_suffix = "_ww" if embedding_mode == "word-window" else ""
+    log_path = RESULTS_DIR / f"whisper_{model}{mode_suffix}_{tag}.log"
+    png_path = RESULTS_DIR / f"whisper_{model}{mode_suffix}_{tag}.png"
+    cmd = [SPEECH_ACCURACY,
+           "--ground-truth", str(gt_json),
+           "--model", model,
+           "--log-file", str(log_path)]
+    if embedding_mode != "slide":
+        cmd += ["--embedding-mode", embedding_mode]
     run(
-        [SPEECH_ACCURACY,
-         "--ground-truth", str(gt_json),
-         "--model", model,
-         "--log-file", str(log_path)],
+        cmd,
         cwd=REPO_ROOT,
-        label=f"Whisper {model} — {tag}",
+        label=f"Whisper {model} ({embedding_mode}) — {tag}",
     )
     if log_path.is_file():
         run(
@@ -172,6 +176,7 @@ def print_summary(
     whisper_models: list[str],
     skip_mert: bool,
     skip_wav2vec: bool,
+    embedding_mode: str = "slide",
 ) -> None:
     sep  = "=" * 70
     thin = "─" * 70
@@ -188,7 +193,8 @@ def print_summary(
     entries: list[tuple[str, str, Path]] = []
     for model in whisper_models:
         for tag in tags:
-            entries.append((f"Whisper {model}", tag, RESULTS_DIR / f"whisper_{model}_{tag}.log"))
+            mode_suffix = "_ww" if embedding_mode == "word-window" else ""
+            entries.append((f"Whisper {model} ({embedding_mode})", tag, RESULTS_DIR / f"whisper_{model}{mode_suffix}_{tag}.log"))
     if not skip_mert:
         for tag in tags:
             entries.append(("MERT-v1-95M", tag, RESULTS_DIR / f"mert_{tag}.log"))
@@ -235,6 +241,10 @@ def main() -> None:
         choices=["tiny", "base", "small", "medium", "large"],
         help="Whisper model(s) to evaluate",
     )
+    parser.add_argument(
+        "--embedding-mode", default="slide", choices=["slide", "word-window"],
+        help="Slide embedding mode for Whisper evaluation (default: slide)",
+    )
     parser.add_argument("--skip-whisper", action="store_true",
                         help="Skip all Whisper evaluation")
     parser.add_argument("--skip-mert", action="store_true",
@@ -265,7 +275,7 @@ def main() -> None:
     for gt_json, tag in zip(args.ground_truth, tags):
         if not args.skip_whisper:
             for model in args.whisper_models:
-                run_whisper(gt_json, tag, model)
+                run_whisper(gt_json, tag, model, args.embedding_mode)
         if args.pairwise:
             run_whisper_pairwise(gt_json, tag)
         if not args.skip_mert:
@@ -274,7 +284,7 @@ def main() -> None:
             run_wav2vec(gt_json, tag)
 
     whisper_models = [] if args.skip_whisper else args.whisper_models
-    print_summary(tags, whisper_models, args.skip_mert, args.skip_wav2vec)
+    print_summary(tags, whisper_models, args.skip_mert, args.skip_wav2vec, args.embedding_mode)
 
 
 if __name__ == "__main__":

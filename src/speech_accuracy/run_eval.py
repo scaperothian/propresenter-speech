@@ -7,11 +7,11 @@ across all configured models (Whisper, MERT, wav2vec-alt).  For each JSON the
 audio path is read from the file's "audio" field.
 
 Usage:
-    python3 tools/run_drive2_eval.py \\
+    speech-accuracy-run-eval \\
         --ground-truth path/to/Song.json \\
         --results-dir logs/song_results
 
-    python3 tools/run_drive2_eval.py \\
+    speech-accuracy-run-eval \\
         --ground-truth spoken.json studio.json \\
         --results-dir logs/drive2 \\
         --whisper-models tiny base \\
@@ -38,11 +38,11 @@ from pathlib import Path
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 SPEECH_ACCURACY     = REPO_ROOT / ".venv" / "bin" / "speech-accuracy"
 SPEECH_ACCURACY_PLT = REPO_ROOT / ".venv" / "bin" / "speech-accuracy-plot"
-WHISPER_PAIRWISE    = REPO_ROOT / "tools" / "whisper_pairwise.py"
+WHISPER_PAIRWISE    = Path(__file__).resolve().parent / "whisper_pairwise.py"
 MERT_PY    = Path("/Users/das/mert-experiment/.venv/bin/python")
 MERT_TOOL  = Path("/Users/das/mert-experiment/tools/mert_accuracy.py")
 WAV2VEC_PY = Path("/Users/das/wav2vec-alt-experiment/.venv/bin/python")

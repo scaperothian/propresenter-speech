@@ -32,9 +32,14 @@ HTTP API to advance, retreat, or jump to a specific slide.
 | Accuracy evaluator | `src/speech_accuracy/evaluator.py` | `load_ground_truth()`, `AccuracyHandler`, `AccuracyEvaluator`, `EvaluationResult`; feeds audio through `FilePipeline` + `WhisperPredictor` with `AccuracyHandler` in place of the normal slide-cue handler; mirrors `FollowSemanticWordsHandler` gate (confidence OR margin threshold) via `_current_pred_idx`; scores each inference call against propresenter-train JSON ground truth using T_snap timing |
 | Accuracy CLI | `src/speech_accuracy/main.py` | `speech-accuracy` (single file) and `speech-accuracy-batch` (batch) entry points; JSONL event logging includes `audio_file`, `ground_truth_file`, `embedding_mode`, `similarity_threshold`, `min_margin` |
 | Accuracy plot | `src/speech_accuracy/plot.py` | `speech-accuracy-plot` — offline 4-panel matplotlib visualiser: waveform, confidence, margin, predicted slide index; reads JSONL log + audio file + ground-truth JSON |
-| Multi-model eval runner | `tools/run_eval.py` | runs Whisper, MERT, and wav2vec-alt evaluations against one or more ground-truth JSON files; `--ground-truth` accepts any propresenter-train JSON; tags derived from filename stems; `--whisper-models` selects model sizes; `TRANSFORMERS_OFFLINE=1` set for MERT subprocess |
-| Summary chart | `tools/plot_summary.py` | reads all `*.log` files in `--logs-dir`, auto-detects model/tag from summary records, plots grouped bar chart; accepts `--extra-logs` for logs outside the main dir |
+| Multi-model eval runner | `src/speech_accuracy/run_eval.py` | `speech-accuracy-run-eval` CLI entry point; runs Whisper, MERT, and wav2vec-alt evaluations against one or more ground-truth JSON files; `--ground-truth` accepts any propresenter-train JSON; tags derived from filename stems; `--whisper-models` selects model sizes; `TRANSFORMERS_OFFLINE=1` set for MERT subprocess |
+| Pairwise similarity chart | `src/speech_accuracy/whisper_pairwise.py` | `speech-accuracy-pairwise` CLI entry point; section×section text-embedding similarity grid using `all-MiniLM-L6-v2`; outputs PNG heatmap |
+| Summary chart | `src/speech_accuracy/plot_summary.py` | `speech-accuracy-plot-summary` CLI entry point; reads all `*.log` files in `--logs-dir`, auto-detects model/tag from summary records, plots grouped bar chart; accepts `--extra-logs` for logs outside the main dir |
 | Whisper benchmark | `tools/benchmark_whisper.py` | standalone script (no propresenter-speech imports); measures per-call latency and RTF for all Whisper model variants using synthetic audio; recommends largest real-time-capable model |
+| Wav2Vec2 benchmark | `tools/benchmark_wav2vec2.py` | standalone; `facebook/wav2vec2-large-960h-lv60-self`; measures per-call latency and RTF |
+| Wav2Vec2-ALT benchmark | `tools/benchmark_wav2vec2_alt.py` | standalone; loads SpeechBrain CKPT+... checkpoint; `--ckpt-dir` selects path |
+| MERT benchmark | `tools/benchmark_mert.py` | standalone; `m-a-p/MERT-v1-95M`; 24 kHz synthetic audio; `--model` selects variant |
+| All-models benchmark | `tools/benchmark_all.py` | standalone rollup; runs Whisper + Wav2Vec2 + Wav2Vec2-ALT + MERT in one pass; prints unified comparison table; each backend skippable with `--skip-*` |
 | ProPresenter HTTP client | `../propresenter-client/src/propresenter_client/main.py` | imported via path dependency |
 
 ## Project conventions
@@ -110,7 +115,7 @@ the predicted slide only updates when `confidence >= similarity_threshold OR mar
 min_margin`; otherwise the last accepted prediction is held.
 
 **Output** — per-inference JSONL log (one object per step + a summary record at the end)
-plus a printed accuracy table.  See `docs/speech-accuracy.md` for the full reference.
+plus a printed accuracy table.  See `src/speech_accuracy/speech-accuracy.md` for the full reference.
 
 ```bash
 # Visualise a log file (interactive)
@@ -126,33 +131,51 @@ combined accuracy table.
 
 ```bash
 # Evaluate two audio versions of the same song
-.venv/bin/python tools/run_eval.py \
+poetry run speech-accuracy-run-eval \
   --ground-truth path/to/Song_spoken.json path/to/Song_studio.json \
   --results-dir logs/song_results \
   --whisper-models tiny base
 
 # Skip MERT/wav2vec, evaluate Whisper only
-.venv/bin/python tools/run_eval.py \
+poetry run speech-accuracy-run-eval \
   --ground-truth path/to/Song.json \
   --skip-mert --skip-wav2vec
 ```
 
-**Summary chart** — `tools/plot_summary.py` reads all `.log` files in a directory and
+**Summary chart** — `speech-accuracy-plot-summary` reads all `.log` files in a directory and
 generates a grouped bar chart (one bar group per model, one bar per audio tag).
 
 ```bash
-.venv/bin/python tools/plot_summary.py --logs-dir logs/song_results
+poetry run speech-accuracy-plot-summary --logs-dir logs/song_results
 
 # Include existing logs from outside the dir (e.g. a previously run Whisper base)
-.venv/bin/python tools/plot_summary.py \
+poetry run speech-accuracy-plot-summary \
   --logs-dir logs/song_results \
   --extra-logs logs/speech_accuracy_Song_20260525_180142.log
 ```
 
-**Whisper benchmark** — `tools/benchmark_whisper.py` is a standalone script (no project
-imports) that measures per-call latency and RTF for every Whisper model size using synthetic
-audio.  Run directly with `python tools/benchmark_whisper.py` after `pip install
-faster-whisper numpy`.
+**Pairwise similarity** — `speech-accuracy-pairwise` generates a section×section
+text-embedding heatmap for a single presentation.
+
+```bash
+poetry run speech-accuracy-pairwise \
+  --ground-truth path/to/Song.json \
+  --output results/song_pairwise.png
+```
+
+**Benchmarks** — standalone scripts in `tools/` (no Poetry install needed beyond deps):
+
+```bash
+python tools/benchmark_whisper.py                        # all Whisper sizes
+python tools/benchmark_wav2vec2.py                       # Wav2Vec2ForCTC
+python tools/benchmark_wav2vec2_alt.py --ckpt-dir PATH   # Wav2Vec2-ALT
+python tools/benchmark_mert.py                           # MERT-v1-95M
+
+# Unified comparison table across all backends
+python tools/benchmark_all.py
+python tools/benchmark_all.py --duration 3.0 --runs 10
+python tools/benchmark_all.py --skip-wav2vec --skip-wav2vec-alt
+```
 
 ## Running tests
 

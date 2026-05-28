@@ -130,6 +130,122 @@ Output:
 
 ---
 
+## CLI: `speech-accuracy-plot`
+
+Visualise a single run log as a 4-panel chart: audio waveform, confidence, margin, and
+predicted slide index over time.
+
+```
+speech-accuracy-plot --log PATH [--output PATH]
+
+Required:
+  --log PATH        JSONL log produced by speech-accuracy or speech-accuracy-run-eval
+
+Optional:
+  --output PATH     Save to PNG instead of opening an interactive window
+```
+
+### Example
+
+```bash
+poetry run speech-accuracy-plot \
+  --log speech_accuracy_Mary_Had_A_Little_Lamb_20260525_120000.log \
+  --output results/mary_plot.png
+```
+
+---
+
+## CLI: `speech-accuracy-run-eval`
+
+Runs Whisper, MERT, and wav2vec-alt evaluations against one or more ground-truth JSON
+files in a single pass and prints a combined accuracy table.  Each model is invoked in a
+subprocess so heavy models don't share memory.
+
+```
+speech-accuracy-run-eval --ground-truth JSON [JSON ...] [options]
+
+Required:
+  --ground-truth JSON [...]   One or more ground-truth JSON files.
+                              Each filename stem becomes the tag in output filenames.
+
+Optional:
+  --results-dir PATH          Output directory (default: results/eval_YYYYMMDD_HHMMSS)
+  --whisper-models MODEL [..] Whisper model sizes to evaluate (default: tiny)
+                              Choices: tiny base small medium large
+  --embedding-mode {slide,word-window}
+                              Whisper embedding mode (default: slide)
+  --skip-whisper              Skip Whisper evaluation
+  --skip-mert                 Skip MERT evaluation
+  --skip-wav2vec              Skip wav2vec-alt evaluation
+  --pairwise                  Also generate whisper pairwise heatmaps
+```
+
+### Examples
+
+```bash
+# Evaluate two audio versions of the same song
+poetry run speech-accuracy-run-eval \
+  --ground-truth path/to/Song_spoken.json path/to/Song_studio.json \
+  --results-dir logs/song_results \
+  --whisper-models tiny base
+
+# Whisper only
+poetry run speech-accuracy-run-eval \
+  --ground-truth path/to/Song.json \
+  --skip-mert --skip-wav2vec
+```
+
+---
+
+## CLI: `speech-accuracy-pairwise`
+
+Generates a section×section text-embedding similarity heatmap for a single presentation.
+Useful for checking how distinct the song sections are before running the evaluator.
+
+```
+speech-accuracy-pairwise --ground-truth JSON --output PATH [--title TEXT]
+```
+
+### Example
+
+```bash
+poetry run speech-accuracy-pairwise \
+  --ground-truth path/to/Song.json \
+  --output results/song_pairwise.png
+```
+
+---
+
+## CLI: `speech-accuracy-plot-summary`
+
+Reads all `.log` files in a directory, auto-detects model and audio tag from each
+summary record, and plots a grouped bar chart (one group per model, one bar per audio tag).
+
+```
+speech-accuracy-plot-summary --logs-dir DIR [options]
+
+Required:
+  --logs-dir DIR        Directory of *.log JSONL files
+
+Optional:
+  --extra-logs LOG [..] Additional logs outside --logs-dir
+  --output PATH         Output PNG (default: <logs-dir>/summary_accuracy.png)
+  --title TEXT          Chart title
+```
+
+### Example
+
+```bash
+poetry run speech-accuracy-plot-summary --logs-dir logs/song_results
+
+# Include an older log from a different run
+poetry run speech-accuracy-plot-summary \
+  --logs-dir logs/song_results \
+  --extra-logs logs/speech_accuracy_Song_20260525_180142.log
+```
+
+---
+
 ## JSONL log format
 
 Each inference call is written as one JSON object per line:

@@ -36,6 +36,9 @@ propresenter-speech = "propresenter_speech.main:main"
 speech-accuracy = "speech_accuracy.main:speech_accuracy_main"
 speech-accuracy-batch = "speech_accuracy.main:evaluate_all_main"
 speech-accuracy-plot = "speech_accuracy.plot:plot_main"
+speech-accuracy-run-eval = "speech_accuracy.run_eval:main"
+speech-accuracy-pairwise = "speech_accuracy.whisper_pairwise:main"
+speech-accuracy-plot-summary = "speech_accuracy.plot_summary:main"
 
 [build-system]
 requires = ["poetry-core"]

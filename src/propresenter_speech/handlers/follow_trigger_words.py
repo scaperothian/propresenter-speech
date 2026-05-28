@@ -1,18 +1,18 @@
 import logging
 import sys
 import time
-from collections import deque
 
 from propresenter_client.main import ProPresenterController
 
 from ..audio_pipeline import COMMAND_COOLDOWN
+from ..predictors import TranscriptionResult
 from ..command_parser import Command, CommandParser, CommandType
 from ..slide_follower import SlideFollower
 
 logger = logging.getLogger(__name__)
 
 
-class FollowHandler:
+class FollowTriggerWordsHandler:
     """
     Auto-advances on trigger words and accepts all explicit commands.
 
@@ -36,19 +36,18 @@ class FollowHandler:
     def on_startup(self) -> None:
         ok, reason = self.slide_follower.validate()
         if not ok:
-            print(f"Error: Cannot start follow mode — {reason}")
+            print(f"Error: Cannot start follow-trigger-words mode — {reason}")
             sys.exit(1)
         self.slide_follower.refresh()
 
     def startup_description(self) -> str:
         return (
-            f"Follow mode active. Listening for: {self.slide_follower.trigger_words}\n"
+            f"Follow-trigger-words mode active. Listening for: {self.slide_follower.trigger_words}\n"
             "Explicit commands ('next slide', 'previous slide', 'go to slide N') also work."
         )
 
-    def on_transcription(self, text: str, word_buffer: deque, audio_time: float = 0.0) -> None:
-        # audio_time is unused; follow mode advances based on trigger words, not position.
-        command = self.command_parser.parse(text)
+    def on_prediction(self, result: TranscriptionResult, _audio_time: float = 0.0) -> None:
+        command = self.command_parser.parse(result.text)
         if command.type != CommandType.UNKNOWN:
             if time.monotonic() - self._last_advance < COMMAND_COOLDOWN:
                 return
@@ -64,13 +63,13 @@ class FollowHandler:
         if not self.slide_follower.has_triggers:
             self.slide_follower.refresh()
 
-        while self.slide_follower.has_triggers and self.slide_follower.matches(text):
+        while self.slide_follower.has_triggers and self.slide_follower.matches(result.text):
             triggered_on = self.slide_follower.trigger_words
             ok = self.pro_controller.next_slide()
             if not ok:
                 print("✗ Failed: next slide (follow)")
                 break
-            print(f"→ Next slide (follow: {triggered_on})")
+            print(f"→ Next slide (follow-trigger-words: {triggered_on})")
             self._last_advance = time.monotonic()
             if not self.slide_follower.refresh_after_advance():
                 break

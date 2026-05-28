@@ -1,10 +1,10 @@
 import logging
 import time
-from collections import deque
 
 from propresenter_client.main import ProPresenterController
 
 from ..audio_pipeline import COMMAND_COOLDOWN
+from ..predictors import TranscriptionResult
 from ..command_parser import Command, CommandParser, CommandType
 
 logger = logging.getLogger(__name__)
@@ -33,9 +33,8 @@ class PresentationHandler:
             "Say 'next slide', 'previous slide', or 'go to slide N'."
         )
 
-    def on_transcription(self, text: str, word_buffer: deque, audio_time: float = 0.0) -> None:
-        # audio_time is unused; presentation mode responds to commands regardless of position.
-        command = self.command_parser.parse(text)
+    def on_prediction(self, result: TranscriptionResult, _audio_time: float = 0.0) -> None:
+        command = self.command_parser.parse(result.text)
         if command.type != CommandType.UNKNOWN:
             if time.monotonic() - self._last_command_at < COMMAND_COOLDOWN:
                 return

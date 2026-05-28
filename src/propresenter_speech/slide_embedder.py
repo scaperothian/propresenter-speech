@@ -227,9 +227,11 @@ class WordWindowEmbedder:
         for start in range(0, len(word_seq) - context_words + 1, self._stride):
             window = word_seq[start : start + context_words]
             window_texts.append(" ".join(w for w, _ in window))
-            # Label = slide_idx of the last word: the window represents having
-            # just heard up to that word, so the correct cue is that slide.
-            self._labels.append(window[-1][1])
+            # Label by the first word's slide: when the speaker has just said
+            # these context_words, the slide they started saying at the beginning
+            # of the window is the correct cue — not the slide they've already
+            # transitioned into by the last word.
+            self._labels.append(window[0][1])
 
         if self._model is None:
             self.load()

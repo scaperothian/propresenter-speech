@@ -3,11 +3,11 @@
 Generate a section×section text-embedding similarity grid for a presentation.
 
 Uses the same sentence-transformer model (all-MiniLM-L6-v2) that the
-follow-enhanced slide embedder uses, applied to each unique slide's full text.
+follow-semantic-words slide embedder uses, applied to each unique slide's full text.
 Output is a PNG heatmap in the same style as the MERT/wav2vec pairwise plots.
 
 Usage:
-    .venv/bin/python tools/whisper_pairwise.py \
+    speech-accuracy-pairwise \
         --ground-truth /path/to/Song.json \
         --output results/drive2/whisper_base_spoken_pairwise.png
 """

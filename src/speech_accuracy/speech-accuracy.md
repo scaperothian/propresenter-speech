@@ -1,6 +1,6 @@
 # speech-accuracy
 
-Offline accuracy evaluation tool for the `follow-enhanced` slide-matching pipeline.
+Offline accuracy evaluation tool for the `follow-semantic-words` slide-matching pipeline.
 
 Given a ground-truth JSON file from [`propresenter-train`](../../propresenter-train), it runs
 Whisper transcription + sentence-transformer embedding inference over the audio file and
@@ -15,23 +15,24 @@ scores each prediction against the known slide timings.
    - `"start time"` / `"stop time"` (e.g. *Mary Had A Little Lamb*, *Your Way Is Better*)
    - `"trigger time"` only, stop derived from next slide's start (e.g. *The Pledge of Allegiance*)
    
-   Slides with `"enabled": false` are excluded, matching follow-enhanced startup behaviour.
+   Slides with `"enabled": false` are excluded, matching follow-semantic-words startup behaviour.
 
 2. **Build embeddings** — constructs a `SlideEmbedder` (sentence-transformers `all-MiniLM-L6-v2`)
    from the slide texts, exactly as the live pipeline does.  `context_words` defaults to the
    average word count per slide unless overridden with `--context-words`.
 
-3. **Run the audio pipeline** — audio is processed through the real `AudioPipeline`
-   (the same code used in production) with `interactive=False` so it runs at full CPU
-   speed rather than real-time.  The pipeline walks the file in sequential non-overlapping
-   `--window-seconds` chunks (e.g. 90 calls for a 3-minute file at 2 s/chunk).
-   Each chunk yields a T_snap value — the audio file position (seconds) at the END of
+3. **Run the audio pipeline** — audio is processed through `FilePipeline` (the same
+   sliding-window code used in production) at full CPU speed.  The pipeline advances by
+   `--poll-interval` each step and transcribes the trailing `--window-seconds` of audio —
+   identical to live mic mode (e.g. ~900 calls for a 3-minute file at `poll_interval=0.2`).
+   Each step yields a T_snap value — the audio file position (seconds) at the END of
    the transcribed window, derived from frame counts with no wall-clock jitter.
 
-4. **Score every inference call** — at each T_snap the *raw*
-   `SlideEmbedder.find_slide_with_margin()` result is compared against the ground-truth
-   slide active at that exact audio position, independent of cue-threshold or same-slide
-   suppression.  This makes every chunk individually evaluable.
+4. **Score every inference call** — at each T_snap the embedder result is gated exactly
+   as the live `FollowSemanticWordsHandler` does: the predicted slide only updates when
+   `confidence >= similarity_threshold` **or** `margin >= min_margin`; otherwise the last
+   accepted prediction is held.  The held prediction is compared against the ground-truth
+   slide active at that T_snap.
 
 5. **Log + summarise** — each inference event is written as a JSON object to a `.log` file
    (one JSON object per line) for later analysis.  A human-readable summary is printed to stdout.
@@ -54,10 +55,14 @@ Whisper / audio:
   --poll-interval SECS      Step between inference calls (default: 0.2)
   --context-words N         Words from word buffer used as query
                             (default: avg words/slide, computed from presentation)
+  --embedding-mode {slide,word-window}
+                            slide: one embedding per slide (default)
+                            word-window: one embedding per word position (better for choruses)
+  --embedding-stride N      (word-window) words to advance between windows (default: 1)
 
-Matching (informational — all raw predictions are logged regardless):
-  --similarity-threshold F  Minimum confidence (default: 0.4)
-  --min-margin F            Minimum score gap (default: 0.15)
+Matching (mirrors live follow-semantic-words gate):
+  --similarity-threshold F  Minimum confidence to accept a new prediction (default: 0.4)
+  --min-margin F            Minimum score gap to accept a new prediction (default: 0.15)
 
 Output:
   --log-file PATH           Event log (default: speech_accuracy_<name>_<ts>.log)
@@ -121,6 +126,122 @@ Output:
   The Pledge of Allegiance          91.3%       0
   ──────────────────────────────  ────────  ──────
   OVERALL                           82.4%
+```
+
+---
+
+## CLI: `speech-accuracy-plot`
+
+Visualise a single run log as a 4-panel chart: audio waveform, confidence, margin, and
+predicted slide index over time.
+
+```
+speech-accuracy-plot --log PATH [--output PATH]
+
+Required:
+  --log PATH        JSONL log produced by speech-accuracy or speech-accuracy-run-eval
+
+Optional:
+  --output PATH     Save to PNG instead of opening an interactive window
+```
+
+### Example
+
+```bash
+poetry run speech-accuracy-plot \
+  --log speech_accuracy_Mary_Had_A_Little_Lamb_20260525_120000.log \
+  --output results/mary_plot.png
+```
+
+---
+
+## CLI: `speech-accuracy-run-eval`
+
+Runs Whisper, MERT, and wav2vec-alt evaluations against one or more ground-truth JSON
+files in a single pass and prints a combined accuracy table.  Each model is invoked in a
+subprocess so heavy models don't share memory.
+
+```
+speech-accuracy-run-eval --ground-truth JSON [JSON ...] [options]
+
+Required:
+  --ground-truth JSON [...]   One or more ground-truth JSON files.
+                              Each filename stem becomes the tag in output filenames.
+
+Optional:
+  --results-dir PATH          Output directory (default: results/eval_YYYYMMDD_HHMMSS)
+  --whisper-models MODEL [..] Whisper model sizes to evaluate (default: tiny)
+                              Choices: tiny base small medium large
+  --embedding-mode {slide,word-window}
+                              Whisper embedding mode (default: slide)
+  --skip-whisper              Skip Whisper evaluation
+  --skip-mert                 Skip MERT evaluation
+  --skip-wav2vec              Skip wav2vec-alt evaluation
+  --pairwise                  Also generate whisper pairwise heatmaps
+```
+
+### Examples
+
+```bash
+# Evaluate two audio versions of the same song
+poetry run speech-accuracy-run-eval \
+  --ground-truth path/to/Song_spoken.json path/to/Song_studio.json \
+  --results-dir logs/song_results \
+  --whisper-models tiny base
+
+# Whisper only
+poetry run speech-accuracy-run-eval \
+  --ground-truth path/to/Song.json \
+  --skip-mert --skip-wav2vec
+```
+
+---
+
+## CLI: `speech-accuracy-pairwise`
+
+Generates a section×section text-embedding similarity heatmap for a single presentation.
+Useful for checking how distinct the song sections are before running the evaluator.
+
+```
+speech-accuracy-pairwise --ground-truth JSON --output PATH [--title TEXT]
+```
+
+### Example
+
+```bash
+poetry run speech-accuracy-pairwise \
+  --ground-truth path/to/Song.json \
+  --output results/song_pairwise.png
+```
+
+---
+
+## CLI: `speech-accuracy-plot-summary`
+
+Reads all `.log` files in a directory, auto-detects model and audio tag from each
+summary record, and plots a grouped bar chart (one group per model, one bar per audio tag).
+
+```
+speech-accuracy-plot-summary --logs-dir DIR [options]
+
+Required:
+  --logs-dir DIR        Directory of *.log JSONL files
+
+Optional:
+  --extra-logs LOG [..] Additional logs outside --logs-dir
+  --output PATH         Output PNG (default: <logs-dir>/summary_accuracy.png)
+  --title TEXT          Chart title
+```
+
+### Example
+
+```bash
+poetry run speech-accuracy-plot-summary --logs-dir logs/song_results
+
+# Include an older log from a different run
+poetry run speech-accuracy-plot-summary \
+  --logs-dir logs/song_results \
+  --extra-logs logs/speech_accuracy_Song_20260525_180142.log
 ```
 
 ---

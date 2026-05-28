@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 from propresenter_speech.command_parser import Command, CommandType
 from propresenter_speech.handlers.presentation import PresentationHandler
+from propresenter_speech.predictors import TranscriptionResult
 
 
 def _make_handler(**kwargs) -> PresentationHandler:
@@ -25,32 +26,36 @@ def _buf() -> deque:
     return deque(maxlen=200)
 
 
-class TestOnTranscription:
+def _result(text: str) -> TranscriptionResult:
+    return TranscriptionResult(text=text, word_buffer=_buf())
+
+
+class TestOnPrediction:
     def test_next_slide(self):
         h = _make_handler()
         h.command_parser.parse.return_value = Command(CommandType.NEXT_SLIDE)
         h.pro_controller.next_slide.return_value = True
-        h.on_transcription("next slide", _buf())
+        h.on_prediction(_result("next slide"))
         h.pro_controller.next_slide.assert_called_once()
 
     def test_previous_slide(self):
         h = _make_handler()
         h.command_parser.parse.return_value = Command(CommandType.PREVIOUS_SLIDE)
         h.pro_controller.previous_slide.return_value = True
-        h.on_transcription("previous slide", _buf())
+        h.on_prediction(_result("previous slide"))
         h.pro_controller.previous_slide.assert_called_once()
 
     def test_go_to_slide(self):
         h = _make_handler()
         h.command_parser.parse.return_value = Command(CommandType.GO_TO_SLIDE, slide_number=5)
         h.pro_controller.go_to_slide.return_value = True
-        h.on_transcription("go to slide five", _buf())
+        h.on_prediction(_result("go to slide five"))
         h.pro_controller.go_to_slide.assert_called_once_with(5)
 
     def test_unknown_command_does_not_call_pro_controller(self):
         h = _make_handler()
         h.command_parser.parse.return_value = Command(CommandType.UNKNOWN)
-        h.on_transcription("random noise", _buf())
+        h.on_prediction(_result("random noise"))
         h.pro_controller.next_slide.assert_not_called()
         h.pro_controller.previous_slide.assert_not_called()
         h.pro_controller.go_to_slide.assert_not_called()

@@ -89,17 +89,17 @@ class TestBuild:
     def test_cross_boundary_label_transitions(self):
         # slide 0: "one two three"  slide 1: "four five six"
         # words: [one(0) two(0) three(0) four(1) five(1) six(1)]
-        # context=3 windows (stride=1):
-        #   [one two three]   → label 0
-        #   [two three four]  → label 1  ← last word is slide 1
-        #   [three four five] → label 1
-        #   [four five six]   → label 1
+        # context=3 windows (stride=1), labelled by first word's slide:
+        #   [one two three]   → label 0  ← first word is slide 0
+        #   [two three four]  → label 0  ← first word is slide 0
+        #   [three four five] → label 0  ← first word is slide 0
+        #   [four five six]   → label 1  ← first word is slide 1
         embedder = self._mock_build(
             _slides_from("one two three", "four five six"), context_words=3
         )
         assert embedder._labels[0] == 0
-        assert embedder._labels[1] == 1
-        assert embedder._labels[2] == 1
+        assert embedder._labels[1] == 0
+        assert embedder._labels[2] == 0
         assert embedder._labels[3] == 1
 
     def test_repeated_slide_produces_two_label_groups(self):
@@ -159,23 +159,23 @@ class TestFindSlideWithMargin:
 
     def test_returns_label_of_best_window_not_its_position(self):
         # slide 0: "alpha beta" (2 words), slide 1: "gamma delta" (2 words)
-        # context=2, stride=1 → windows:
-        #   [alpha beta]  → label 0
-        #   [beta gamma]  → label 1
-        #   [gamma delta] → label 1
-        # Give the second window ([beta gamma]) the highest cosine → should return label 1
+        # context=2, stride=1 → windows (first-word labelling):
+        #   [alpha beta]  → label 0  ← first word "alpha" is slide 0
+        #   [beta gamma]  → label 0  ← first word "beta" is slide 0
+        #   [gamma delta] → label 1  ← first word "gamma" is slide 1
+        # Give the third window ([gamma delta]) the highest cosine → should return label 1
         slides = [(0, "alpha beta"), (1, "gamma delta")]
         v_window0 = _unit(np.array([1.0, 0.0, 0.0], dtype=np.float32))
-        v_window1 = _unit(np.array([0.0, 1.0, 0.0], dtype=np.float32))
-        v_window2 = _unit(np.array([0.0, 0.5, 0.5], dtype=np.float32))
-        query = _unit(np.array([0.0, 1.0, 0.0], dtype=np.float32))  # closest to window1
+        v_window1 = _unit(np.array([0.5, 0.5, 0.0], dtype=np.float32))
+        v_window2 = _unit(np.array([0.0, 1.0, 0.0], dtype=np.float32))
+        query = _unit(np.array([0.0, 1.0, 0.0], dtype=np.float32))  # closest to window2
         embedder = _make_embedder(
             slides, context_words=2,
             window_vecs=[v_window0, v_window1, v_window2],
             query_vec=query,
         )
         idx, score, _ = embedder.find_slide_with_margin("query")
-        assert idx == 1   # label of window1 — slide 1
+        assert idx == 1   # label of window2 — slide 1
         assert score > 0.8
 
     def test_custom_slide_indices_returned_not_position(self):

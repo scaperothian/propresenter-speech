@@ -4,11 +4,12 @@ Voice-controlled slide advancement for [ProPresenter](https://renewedvision.com/
 using [Whisper](https://github.com/openai/whisper) ASR via
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper), running on-device.
 
-Three modes of operation:
+Four modes of operation:
 
 - **`presentation` mode** (default) — respond to explicit voice commands: "next slide", "previous slide", "go to slide five".
-- **`follow` mode** — automatically advance when a trigger phrase near the end of the active slide is heard, while also accepting all explicit commands.
-- **`follow-enhanced` mode** — continuously matches recent speech to slide text using sentence-transformer embeddings (all-MiniLM-L6-v2); cues whichever slide best matches what was just said, and can jump forward or backward freely.
+- **`follow-trigger-words` mode** — automatically advance when a trigger phrase near the end of the active slide is heard, while also accepting all explicit commands.
+- **`follow-semantic-words` mode** — continuously matches recent speech to slide text using sentence-transformer embeddings (all-MiniLM-L6-v2); cues whichever slide best matches what was just said, and can jump forward or backward freely.
+- **`follow-semantic-audio` mode** — matches live microphone audio to per-slide MERT embeddings built from reference audio at startup; no transcription required.
 
 ---
 
@@ -19,15 +20,18 @@ Three modes of operation:
 | macOS | Tested on macOS 13+; built-in or headset mic both work |
 | Python 3.11+ | Managed via Poetry |
 | [Poetry](https://python-poetry.org) | `pip install poetry` or `brew install poetry` |
-| [ffmpeg](https://ffmpeg.org) | Not required for the mic pipeline; only needed if passing audio files directly |
 | ProPresenter 7 | Network API must be enabled: Preferences → Network → Enable Network |
 | `../propresenter-client` | Sibling directory — the HTTP client library |
 
 > **Note:** Whisper model weights (~74 MB for `base`) are downloaded automatically on first run
 > from HuggingFace and cached in `~/.cache/huggingface/hub/`.
 >
-> **`follow-enhanced` note:** The sentence-transformer model (`all-MiniLM-L6-v2`, ~80 MB) is also
+> **`follow-semantic-words` note:** The sentence-transformer model (`all-MiniLM-L6-v2`, ~80 MB) is also
 > downloaded automatically on first use.
+>
+> **`follow-semantic-audio` note:** The MERT model (`m-a-p/MERT-v1-95M`, ~380 MB) requires the
+> torch extra: `poetry install --extras torch`.  A propresenter-train ground-truth JSON file is
+> also required to build slide prototypes at startup.
 
 ---
 
@@ -39,6 +43,9 @@ cd propresenter-speech
 
 # Install all dependencies (creates a .venv automatically)
 poetry install
+
+# For wav2vec2 / wav2vec2-alt / MERT backends (requires PyTorch 2.7.0+)
+poetry install --extras torch
 
 # Verify the CLI is available
 poetry run propresenter-speech --help
@@ -57,27 +64,31 @@ poetry run propresenter-speech --help
 # Explicit-command mode (default)
 poetry run propresenter-speech
 
-# Follow mode — auto-advances on the last word of each slide
-poetry run propresenter-speech --mode follow
+# Follow-trigger-words mode — auto-advances on trigger phrase near end of each slide
+poetry run propresenter-speech --mode follow-trigger-words
 
-# Follow-enhanced mode — semantic matching against all slides
-poetry run propresenter-speech --mode follow-enhanced
+# Follow-semantic-words mode — semantic text matching against all slides
+poetry run propresenter-speech --mode follow-semantic-words
+
+# Follow-semantic-audio mode — MERT audio matching (requires ground-truth JSON)
+poetry run propresenter-speech --mode follow-semantic-audio \
+  --ground-truth ../propresenter-train/output/Song.json
 ```
 
 3. Speak into your mic:
 
 | Say | Action | Modes |
 |-----|--------|-------|
-| "next slide" | Advance one slide | both |
-| "previous slide" | Go back one slide | both |
-| "go back" | Go back one slide | both |
-| "go to slide five" | Jump to slide 5 | both |
-| "slide number 12" | Jump to slide 12 | both |
-| "jump to slide 3" | Jump to slide 3 | both |
-| *(last word of slide)* | Auto-advance | follow only |
-| *(any slide text)* | Jump to best-matching slide | follow-enhanced |
+| "next slide" | Advance one slide | presentation, follow-trigger-words |
+| "previous slide" | Go back one slide | presentation, follow-trigger-words |
+| "go back" | Go back one slide | presentation, follow-trigger-words |
+| "go to slide five" | Jump to slide 5 | presentation, follow-trigger-words |
+| "slide number 12" | Jump to slide 12 | presentation, follow-trigger-words |
+| *(trigger phrase near end of slide)* | Auto-advance | follow-trigger-words |
+| *(any slide text)* | Jump to best-matching slide | follow-semantic-words |
+| *(audio matching a slide)* | Jump to best-matching slide | follow-semantic-audio |
 
-Press **Ctrl-C** or type `q` + Enter to stop.
+Press **Ctrl-C** to stop.
 
 ---
 
@@ -97,44 +108,46 @@ Presentation selection:
   --library NAME        Library to search when --presentation is given (default: Default)
 
 Operation mode:
-  --mode {presentation,follow,follow-enhanced}
-                        presentation: explicit commands only (default)
-                        follow: auto-advance on slide trigger words + explicit commands
-                        follow-enhanced: semantic embedding search — cues whichever slide best matches recent speech
-  --trigger-words N     (follow) number of words in the trigger phrase (default: 2)
-  --trigger-index I     (follow) pythonic index of the anchor trigger word;
+  --mode {presentation,follow-trigger-words,follow-semantic-words,follow-semantic-audio}
+                        presentation:          explicit commands only (default)
+                        follow-trigger-words:  auto-advance on slide trigger phrase + explicit commands
+                        follow-semantic-words: text embedding search — cues whichever slide best matches recent speech
+                        follow-semantic-audio: MERT audio embedding search — cues whichever slide best matches live audio
+  --trigger-words N     (follow-trigger-words) number of words in the trigger phrase (default: 2)
+  --trigger-index I     (follow-trigger-words) pythonic index of the anchor trigger word;
                         -2 = second-to-last word (default), -1 = last word
-  --context-words N     (follow-enhanced) recent spoken words used to form the query n-gram
+  --context-words N     (follow-semantic-words) recent spoken words used to form the query n-gram
                         (default: avg words/slide, computed at startup from the loaded presentation)
   --similarity-threshold FLOAT
-                        (follow-enhanced) minimum score to trigger a slide cue (default: 0.4)
-  --min-margin FLOAT    (follow-enhanced) minimum gap between best and second-best score
+                        (follow-semantic-words/audio) minimum score to trigger a slide cue (default: 0.4)
+  --min-margin FLOAT    (follow-semantic-words/audio) minimum gap between best and second-best score
                         to trigger even when below --similarity-threshold (default: 0.15)
   --embedding-mode {slide,word-window}
-                        slide: one embedding per slide (default)
+                        (follow-semantic-words) slide: one embedding per slide (default)
                         word-window: one embedding per word position — finer resolution,
                                      better for repeated sections (choruses)
   --embedding-stride N  (word-window) words to advance between successive windows (default: 1)
+  --ground-truth PATH   (follow-semantic-audio) path to propresenter-train ground-truth JSON;
+                        used to build per-slide MERT prototype embeddings at startup
 
-Whisper ASR:
+ASR backend:
+  --asr-backend {whisper,wav2vec2,wav2vec2-alt}
+                        whisper:      faster-whisper CTranslate2 (default)
+                        wav2vec2:     HuggingFace Wav2Vec2ForCTC (requires --extras torch)
+                        wav2vec2-alt: SpeechBrain ALT lyric-tuned checkpoint (requires --extras torch)
   --model {tiny,base,small,medium,large}
-                        Whisper model size (default: base)
-                        tiny < base < small < medium < large
-                        Smaller = faster; larger = more accurate
+                        (whisper) Whisper model size (default: base)
+  --wav2vec-ckpt-dir PATH
+                        (wav2vec2-alt) path to SpeechBrain CKPT+... directory
 
 Audio pipeline:
   --device DEVICE       Input device index; see --list-devices (default: system default)
-  --window-seconds SECS Rolling audio window length fed to Whisper, all modes (default: 2.0)
-  --poll-interval SECS  Seconds between Whisper inference calls, all modes (default: 0.2)
+  --window-seconds SECS Rolling audio window length (default: 2.0)
+  --poll-interval SECS  Seconds between inference calls (default: 0.2)
   --list-devices        Print available input and output audio devices and exit
-  --audio-file PATH     Process a WAV/FLAC/OGG file instead of the microphone
-                        (resampled to 16 kHz automatically; tqdm progress bar shown)
-  --playback            Play the audio file through speakers while processing
-                        (requires --audio-file)
-  --output-device N     Output device index for playback (see --list-devices; default: system default)
 
 Misc:
-  --verbose             Print transcriptions and trigger words to stdout
+  --verbose             Print transcriptions and match info to stdout
   --log-level {DEBUG,INFO,WARNING,ERROR}
 ```
 
@@ -147,40 +160,35 @@ poetry run propresenter-speech --presentation "Sermon Slides"
 # Activate from a non-default library
 poetry run propresenter-speech --presentation "How Great Thou Art" --library Songs
 
-# Activate a presentation and use follow mode
-poetry run propresenter-speech --presentation "Sermon Slides" --mode follow
+# Activate a presentation and use follow-trigger-words mode
+poetry run propresenter-speech --presentation "Sermon Slides" --mode follow-trigger-words
 
-# Follow mode — trigger on the last word only (override default second-to-last, 2-word phrase)
-poetry run propresenter-speech --mode follow --trigger-index=-1 --trigger-words=1
+# Trigger on the last word only (override default second-to-last, 2-word phrase)
+poetry run propresenter-speech --mode follow-trigger-words --trigger-index=-1 --trigger-words=1
 
-# Follow-enhanced mode — semantic slide matching from active presentation
-poetry run propresenter-speech --mode follow-enhanced
+# Semantic text matching from active presentation
+poetry run propresenter-speech --mode follow-semantic-words
 
-# Follow-enhanced with stricter matching or explicit context window override
-poetry run propresenter-speech --mode follow-enhanced --similarity-threshold 0.55 --context-words 8
+# Semantic text matching with stricter thresholds or explicit context window
+poetry run propresenter-speech --mode follow-semantic-words --similarity-threshold 0.55 --context-words 8
 
-# Follow-enhanced with word-window embedder (better for songs with repeated choruses)
-poetry run propresenter-speech --mode follow-enhanced --embedding-mode word-window
-poetry run propresenter-speech --mode follow-enhanced --embedding-mode word-window --embedding-stride 2
+# Word-window embedder (better for songs with repeated choruses)
+poetry run propresenter-speech --mode follow-semantic-words --embedding-mode word-window
+poetry run propresenter-speech --mode follow-semantic-words --embedding-mode word-window --embedding-stride 2
 
-# Use a more accurate model
+# MERT audio embedding mode (requires ground-truth JSON and torch extra)
+poetry run propresenter-speech --mode follow-semantic-audio \
+  --ground-truth ../propresenter-train/output/"How Great Thou Art.json"
+
+# Use a more accurate Whisper model
 poetry run propresenter-speech --model small
 
 # Show what Whisper is hearing and which trigger words are active
-poetry run propresenter-speech --mode follow --verbose
+poetry run propresenter-speech --mode follow-trigger-words --verbose
 
 # List all input and output audio devices, then use device #2 for input
 poetry run propresenter-speech --list-devices
 poetry run propresenter-speech --device 2
-
-# Process an audio file with tqdm progress bar (silent)
-poetry run propresenter-speech --audio-file audio/sermon.wav --mode follow
-
-# Process an audio file and play it through speakers at the same time
-poetry run propresenter-speech --audio-file audio/sermon.wav --mode follow --playback
-
-# Play through a specific output device
-poetry run propresenter-speech --audio-file audio/sermon.wav --playback --output-device 3
 
 # Connect to ProPresenter on another machine
 poetry run propresenter-speech --host 192.168.1.10
@@ -193,31 +201,43 @@ poetry run propresenter-speech --window-seconds 3.0
 
 ## Architecture
 
-**`presentation` / `follow` pipeline:**
-
-All three modes share a single `AudioPipeline` (ring buffer + Whisper polling). Mode logic lives exclusively in a `ModeHandler` class.
+All modes share a single `AudioPipeline` (ring buffer + predictor polling). The pipeline is
+model-agnostic: it calls a `Predictor` to convert audio to a result, then hands that result
+to a `ModeHandler`.
 
 ```
-Microphone (or audio file)
+Microphone
     │
     ▼
 AudioPipeline          (sounddevice ring buffer, poll every --poll-interval s)
-    │  text + rolling word buffer
+    │  audio chunk
     ▼
-ModeHandler.on_transcription()
+Predictor.predict()
     │
-    ├── PresentationHandler  →  CommandParser  →  ProPresenterController
+    ├── WhisperPredictor     → TranscriptionResult(text, word_buffer)
+    ├── Wav2VecPredictor     → TranscriptionResult(text, word_buffer)
+    ├── Wav2VecAltPredictor  → TranscriptionResult(text, word_buffer)
+    └── MERTPredictor        → AudioEmbeddingResult(embedding)
     │
-    ├── FollowHandler        →  CommandParser + SlideFollower  →  ProPresenterController
-    │                           (SlideFollower caches presentation details,
-    │                            tracks slide index, extracts trigger words)
+    ▼
+ModeHandler.on_prediction()
     │
-    └── FollowEnhancedHandler    →  SlideEmbedder.find_slide_with_margin()  →  ProPresenterController
-                                    (cosine similarity over all-MiniLM-L6-v2 embeddings,
-                                     built at startup from active presentation slides)
+    ├── PresentationHandler         →  CommandParser  →  ProPresenterController
+    │
+    ├── FollowTriggerWordsHandler   →  CommandParser + SlideFollower  →  ProPresenterController
+    │                                  (SlideFollower caches presentation details,
+    │                                   tracks slide index, extracts trigger words)
+    │
+    ├── FollowSemanticWordsHandler  →  SlideEmbedder.find_slide_with_margin()  →  ProPresenterController
+    │                                  (cosine similarity over all-MiniLM-L6-v2 embeddings,
+    │                                   built at startup from active presentation slides)
+    │
+    └── FollowSemanticAudioHandler  →  mean-centered cosine vs MERT prototypes  →  ProPresenterController
+                                       (prototypes built at startup from --ground-truth reference audio;
+                                        same MERTPredictor instance used for both prototype building and live inference)
 ```
 
-**Follow mode slide-text flow (per `refresh()`):**
+**Follow-trigger-words slide-text flow (per `refresh()`):**
 
 | Step | Endpoint |
 |------|----------|
@@ -227,14 +247,11 @@ ModeHandler.on_transcription()
 | 4. Read `slides[index]["text"]` | — (from cached details) |
 | fallback | `GET /v1/status/slide` |
 
-Presentation details are cached for the lifetime of the `SlideFollower` and only re-fetched when the active presentation UUID changes.
-
-After each auto-advance `refresh_after_advance()` is used instead of `refresh()`: it increments the locally cached slide index rather than calling `GET /v1/presentation/slide_index` again, avoiding a race condition where the API returns the pre-advance value. A single audio segment can therefore advance through multiple slides in one pass.
+After each auto-advance `refresh_after_advance()` increments the locally cached slide index
+rather than calling `GET /v1/presentation/slide_index` again, avoiding a race condition where
+the API returns the pre-advance value.
 
 Full ProPresenter API reference: `http://<propresenter-ip>:1025/v1/doc/index.html#`
-
-All components are injected into `AudioPipeline` — easy to swap (e.g. replace
-`Transcriber` with a web-hosted model, or add new `ModeHandler` variants).
 
 ---
 
@@ -243,7 +260,7 @@ All components are injected into `AudioPipeline` — easy to swap (e.g. replace
 Most tests are fully unit-level — no microphone, GPU, or ProPresenter instance needed.
 
 ```bash
-poetry run pytest          # run all tests (unit + integration)
+poetry run pytest          # run all tests
 poetry run pytest -v       # verbose output
 poetry run pytest tests/test_command_parser.py -v
 ```
@@ -272,70 +289,40 @@ by default, so `base` typically responds in under 1 second on Apple Silicon.
 Speak clearly and pause briefly after the number.  You can also try `--model small`
 for better word-error rate on numbers.
 
+**follow-semantic-audio matches the wrong slide**  
+Try raising `--similarity-threshold` or `--min-margin` to require more confident
+matches.  Check that the ground-truth JSON covers the full audio range — slides with
+very short reference windows (< 0.1 s) are skipped during prototype building.
+
 ---
 
-## Accuracy evaluation
+## Performance evaluation
 
 The `speech-accuracy`, `speech-accuracy-batch`, and `speech-accuracy-plot` CLI tools measure
-and visualise how well the follow-enhanced pipeline matches slides against ground-truth timing
+and visualise how well the follow-semantic-words pipeline matches slides against ground-truth timing
 data from [`propresenter-train`](../propresenter-train).
 
-The audio pipeline runs in sliding-window mode: advances by `--poll-interval` each step and
-always transcribes the trailing `--window-seconds` of audio — identical to live mic mode.
-Prediction gating mirrors `follow-enhanced`: the predicted slide only changes when
-`confidence >= --similarity-threshold` **or** `margin >= --min-margin`.
-
-```bash
-# Evaluate a single presentation (slide embedder, default)
-poetry run speech-accuracy \
-  --ground-truth ../propresenter-train/output/"Mary Had A Little Lamb.json"
-
-# Evaluate with word-window embedder (better for songs with choruses)
-poetry run speech-accuracy \
-  --ground-truth ../propresenter-train/output/"Drive.json" \
-  --embedding-mode word-window --model base --verbose
-
-# Batch evaluate every presentation in a directory
-poetry run speech-accuracy-batch \
-  --ground-truth-dir ../propresenter-train/output/ --model base
-
-# Visualise a results log (waveform + confidence + margin + predicted slide)
-poetry run speech-accuracy-plot --log speech_accuracy_Drive_20260525_154626.log
-poetry run speech-accuracy-plot --log results.log --output plot.png
-```
-
-Each run produces a JSONL `.log` file (one object per inference step + a summary record)
-and a printed accuracy table.  The summary record includes the audio file path, ground-truth
-JSON path, embedding mode, and threshold values so logs are self-contained.
-
-See [docs/speech-accuracy.md](docs/speech-accuracy.md) for the full reference.
-
-### Whisper benchmark
-
-`tools/benchmark_whisper.py` is a standalone script that measures per-call latency and
-real-time factor (RTF) for every Whisper model size.  No project dependencies required.
-
-```bash
-python tools/benchmark_whisper.py
-python tools/benchmark_whisper.py --models tiny base small --duration 3.0 --runs 10
-```
+See [src/speech_accuracy/speech-accuracy.md](src/speech_accuracy/speech-accuracy.md) for the full reference.
 
 ---
 
-## Future modes (planned)
+## Planned features
 
 - Wake-word activation ("Hey ProPresenter")  
 - Continuous transcript display  
 - Open/switch presentation by name  
 - Web-based Whisper backend (option for slower Macs)
+- HMM-based slide prediction — model slide transitions as a hidden Markov chain for temporally coherent cuing
+- RL-based slide prediction — train a policy to advance slides based on audio/text state and timing reward signals
 
 ## Modes reference
 
-| `--mode` | Auto-advance | Explicit commands | Requires slide text from API |
-|----------|-------------|-------------------|-------------------------------|
-| `presentation` | No | Yes | No |
-| `follow` | Yes (on trigger words, sequential) | Yes | Yes (exits on startup if unavailable) |
-| `follow-enhanced` | Yes (semantic match, any slide) | No | Yes (builds embeddings at startup) |
+| `--mode` | Auto-advance | Explicit commands | Extra requirements |
+|----------|-------------|-------------------|--------------------|
+| `presentation` | No | Yes | — |
+| `follow-trigger-words` | Yes (trigger phrase, sequential) | Yes | Active presentation in ProPresenter |
+| `follow-semantic-words` | Yes (text match, any slide) | No | Active presentation in ProPresenter |
+| `follow-semantic-audio` | Yes (audio match, any slide) | No | `--ground-truth` JSON + torch extra |
 
 ---
 

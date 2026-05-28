@@ -13,7 +13,7 @@ Usage:
 
     speech-accuracy-run-eval \\
         --ground-truth spoken.json studio.json \\
-        --results-dir logs/drive2 \\
+        --results-dir logs/incubus_drive \\
         --whisper-models tiny base \\
         --skip-mert
 

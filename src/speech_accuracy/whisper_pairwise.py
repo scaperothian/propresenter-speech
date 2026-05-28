@@ -9,7 +9,7 @@ Output is a PNG heatmap in the same style as the MERT/wav2vec pairwise plots.
 Usage:
     speech-accuracy-pairwise \
         --ground-truth /path/to/Song.json \
-        --output results/drive2/whisper_base_spoken_pairwise.png
+        --output results/incubus_drive/whisper_base_spoken_pairwise.png
 """
 
 from __future__ import annotations

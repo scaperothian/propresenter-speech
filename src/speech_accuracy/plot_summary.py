@@ -7,10 +7,10 @@ a summary record (record_type=summary) with inference_accuracy, model/
 embedding_mode, and audio_file fields.
 
 Usage:
-    speech-accuracy-plot-summary --logs-dir logs/drive2_rerun_20260527
-    speech-accuracy-plot-summary --logs-dir logs/drive2_rerun_20260527 \\
-        --extra-logs logs/speech_accuracy_Drive-2_20260525_180142.log \\
-                     logs/speech_accuracy_Drive-2_20260525_203343.log \\
+    speech-accuracy-plot-summary --logs-dir logs/incubus_drive
+    speech-accuracy-plot-summary --logs-dir logs/incubus_drive \\
+        --extra-logs logs/speech_accuracy_studio_drive_20260525_180142.log \\
+                     logs/speech_accuracy_spoken_drive_20260525_203343.log \\
         --output summary.png
 """
 

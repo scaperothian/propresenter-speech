@@ -180,16 +180,19 @@ poetry run propresenter-speech --window-seconds 3.0
 
 **`presentation` / `follow` pipeline:**
 
-All three modes share a single `AudioPipeline` (ring buffer + Whisper polling). Mode logic lives exclusively in a `ModeHandler` class.
+All three modes share a single `AudioPipeline` (ring buffer + Whisper polling). The pipeline is model-agnostic: it calls a `Predictor` to convert audio to a result, then hands that result to a `ModeHandler`.
 
 ```
 Microphone
     │
     ▼
 AudioPipeline          (sounddevice ring buffer, poll every --poll-interval s)
-    │  text + rolling word buffer
+    │  audio chunk
     ▼
-ModeHandler.on_transcription()
+WhisperPredictor       (wraps Transcriber; owns 200-word rolling word_buffer)
+    │  TranscriptionResult(text, word_buffer)
+    ▼
+ModeHandler.on_prediction()
     │
     ├── PresentationHandler  →  CommandParser  →  ProPresenterController
     │
@@ -294,6 +297,30 @@ and a printed accuracy table.  The summary record includes the audio file path, 
 JSON path, embedding mode, and threshold values so logs are self-contained.
 
 See [docs/speech-accuracy.md](docs/speech-accuracy.md) for the full reference.
+
+### Multi-model evaluation runner
+
+`tools/run_eval.py` runs Whisper, MERT, and wav2vec-alt evaluations against any number of
+ground-truth JSON files and prints a combined accuracy table.
+
+```bash
+# Evaluate two audio versions of the same song across Whisper tiny + base
+.venv/bin/python tools/run_eval.py \
+  --ground-truth path/to/Song_spoken.json path/to/Song_studio.json \
+  --results-dir logs/song_results \
+  --whisper-models tiny base
+
+# Whisper only (skip audio-embedding models)
+.venv/bin/python tools/run_eval.py \
+  --ground-truth path/to/Song.json --skip-mert --skip-wav2vec
+```
+
+`tools/plot_summary.py` reads all `.log` files in a directory and generates a grouped bar
+chart (one group per model, one bar per audio tag).
+
+```bash
+.venv/bin/python tools/plot_summary.py --logs-dir logs/song_results
+```
 
 ### Whisper benchmark
 

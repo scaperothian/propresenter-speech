@@ -13,19 +13,24 @@ ProPresenter HTTP API to advance, retreat, or jump to a specific slide.
 | Concern | Module | Notes |
 |---------|--------|-------|
 | Whisper transcription | `src/propresenter_speech/transcriber.py` | lazy-loads via faster-whisper; no PyTorch; models from HuggingFace |
+| Predictor protocol | `src/propresenter_speech/predictor.py` | `Predictor` Protocol — `predict(audio) -> Any`; `TranscriptionResult` dataclass — `text: str`, `word_buffer: deque`; decouples pipeline from model type |
+| Whisper predictor | `src/propresenter_speech/whisper_predictor.py` | `WhisperPredictor` — wraps `Transcriber`, owns the 200-word rolling `_word_buffer`, returns `TranscriptionResult`; always returns a result (even for empty transcriptions, so every step is recorded) |
 | Command parsing | `src/propresenter_speech/command_parser.py` | pure Python, no I/O |
-| Shared audio pipeline | `src/propresenter_speech/audio_pipeline.py` | `AudioPipeline` — ring-buffer mic capture (and file mode used internally by the accuracy evaluator); polls Whisper on a timer; calls `ModeHandler.on_transcription()` |
+| Mic audio pipeline | `src/propresenter_speech/audio_pipeline.py` | `_BasePipeline` (model-agnostic: `predictor`, `_model_busy`) + `AudioPipeline` — ring-buffer mic capture; polls `Predictor.predict()` on a timer; calls `ModeHandler.on_prediction()` |
+| File audio pipeline | `src/propresenter_speech/file_pipeline.py` | `FilePipeline(_BasePipeline)` — sliding-window file processing used by the accuracy evaluator; `_resample` lives here |
 | Mode enum | `src/propresenter_speech/modes.py` | `Mode.PRESENTATION` / `Mode.FOLLOW` / `Mode.FOLLOW_ENHANCED` |
-| Mode handler protocol | `src/propresenter_speech/handlers/base.py` | `ModeHandler` Protocol — `on_startup()`, `startup_description()`, `on_transcription()` |
+| Mode handler protocol | `src/propresenter_speech/handlers/base.py` | `ModeHandler` Protocol — `on_startup()`, `startup_description()`, `on_prediction(result: Any, audio_time: float)` |
 | Presentation mode | `src/propresenter_speech/handlers/presentation.py` | `PresentationHandler` — parses explicit voice commands only |
 | Follow mode | `src/propresenter_speech/handlers/follow.py` | `FollowHandler` — explicit commands + trigger-word auto-advance via `SlideFollower`; cooldown prevents double-advance on overlapping windows; explicit commands use `refresh_after_advance`/`refresh_to_slide` to avoid API race condition |
 | Follow-enhanced mode | `src/propresenter_speech/handlers/follow_enhanced.py` | `FollowEnhancedHandler` — semantic cosine-similarity match via `SlideEmbedder`; jumps to best-matching slide freely |
 | Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text, extracts trigger phrase via `--trigger-index` / `--trigger-words`; `refresh_after_advance()` and `refresh_to_slide()` avoid race with API propagation delay |
 | Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — one embedding per slide; `WordWindowEmbedder` — one embedding per word position (configurable stride), slides passed as `(slide_idx, text)` pairs in chronological order so repeated sections resolve correctly; both expose `find_slide_with_margin()` and `avg_words_per_slide` |
-| CLI entry point | `src/propresenter_speech/main.py` | argparse, builds handler + `AudioPipeline`, calls `.run()` |
-| Accuracy evaluator | `src/speech_accuracy/evaluator.py` | `load_ground_truth()`, `AccuracyHandler`, `AccuracyEvaluator`, `EvaluationResult`; feeds audio through `AudioPipeline` with `AccuracyHandler` in place of the normal slide-cue handler; mirrors `FollowEnhancedHandler` gate (confidence OR margin threshold) via `_current_pred_idx`; scores each inference call against propresenter-train JSON ground truth using T_snap timing |
+| CLI entry point | `src/propresenter_speech/main.py` | argparse, builds `WhisperPredictor` + handler + `AudioPipeline`, calls `.run()` |
+| Accuracy evaluator | `src/speech_accuracy/evaluator.py` | `load_ground_truth()`, `AccuracyHandler`, `AccuracyEvaluator`, `EvaluationResult`; feeds audio through `FilePipeline` + `WhisperPredictor` with `AccuracyHandler` in place of the normal slide-cue handler; mirrors `FollowEnhancedHandler` gate (confidence OR margin threshold) via `_current_pred_idx`; scores each inference call against propresenter-train JSON ground truth using T_snap timing |
 | Accuracy CLI | `src/speech_accuracy/main.py` | `speech-accuracy` (single file) and `speech-accuracy-batch` (batch) entry points; JSONL event logging includes `audio_file`, `ground_truth_file`, `embedding_mode`, `similarity_threshold`, `min_margin` |
 | Accuracy plot | `src/speech_accuracy/plot.py` | `speech-accuracy-plot` — offline 4-panel matplotlib visualiser: waveform, confidence, margin, predicted slide index; reads JSONL log + audio file + ground-truth JSON |
+| Multi-model eval runner | `tools/run_eval.py` | runs Whisper, MERT, and wav2vec-alt evaluations against one or more ground-truth JSON files; `--ground-truth` accepts any propresenter-train JSON; tags derived from filename stems; `--whisper-models` selects model sizes; `TRANSFORMERS_OFFLINE=1` set for MERT subprocess |
+| Summary chart | `tools/plot_summary.py` | reads all `*.log` files in `--logs-dir`, auto-detects model/tag from summary records, plots grouped bar chart; accepts `--extra-logs` for logs outside the main dir |
 | Whisper benchmark | `tools/benchmark_whisper.py` | standalone script (no propresenter-speech imports); measures per-call latency and RTF for all Whisper model variants using synthetic audio; recommends largest real-time-capable model |
 | ProPresenter HTTP client | `../propresenter-client/src/propresenter_client/main.py` | imported via path dependency |
 
@@ -82,14 +87,14 @@ poetry run speech-accuracy-batch \
 normalised automatically: `"start time"`/`"stop time"` and `"trigger time"` (stop derived
 from next slide's start).  Slides with `"enabled": false` are excluded.
 
-**Evaluation strategy** — `AccuracyEvaluator` feeds the audio file through `AudioPipeline`
-with `AccuracyHandler` replacing the normal slide-cue handler.  File mode uses a sliding
-window identical to mic mode: advances by `poll_interval` each step, always transcribes the
-trailing `window_seconds` of audio (e.g. ~900 steps for a 3-minute file at
-`poll_interval=0.2s`).  `audio_time` passed to `on_transcription()` is T_snap — the audio
-file position (seconds) at the END of the transcribed window, derived from frame counts with
-no wall-clock jitter.  `AccuracyHandler` mirrors `FollowEnhancedHandler`'s gate: the
-predicted slide only updates when `confidence >= similarity_threshold OR margin >=
+**Evaluation strategy** — `AccuracyEvaluator` feeds the audio file through `FilePipeline`
+with `WhisperPredictor` and `AccuracyHandler` replacing the normal slide-cue handler.
+`FilePipeline` uses a sliding window identical to mic mode: advances by `poll_interval` each
+step, always transcribes the trailing `window_seconds` of audio (e.g. ~900 steps for a
+3-minute file at `poll_interval=0.2s`).  `audio_time` passed to `on_prediction()` is T_snap
+— the audio file position (seconds) at the END of the transcribed window, derived from frame
+counts with no wall-clock jitter.  `AccuracyHandler` mirrors `FollowEnhancedHandler`'s gate:
+the predicted slide only updates when `confidence >= similarity_threshold OR margin >=
 min_margin`; otherwise the last accepted prediction is held.
 
 **Output** — per-inference JSONL log (one object per step + a summary record at the end)
@@ -101,6 +106,35 @@ poetry run speech-accuracy-plot --log speech_accuracy_MyPresentation_20260525_12
 
 # Save to PNG
 poetry run speech-accuracy-plot --log results.log --output plot.png
+```
+
+**Multi-model evaluation runner** — `tools/run_eval.py` runs Whisper, MERT, and wav2vec-alt
+evaluations against any number of ground-truth JSON files in a single pass and prints a
+combined accuracy table.
+
+```bash
+# Evaluate two audio versions of the same song
+.venv/bin/python tools/run_eval.py \
+  --ground-truth path/to/Song_spoken.json path/to/Song_studio.json \
+  --results-dir logs/song_results \
+  --whisper-models tiny base
+
+# Skip MERT/wav2vec, evaluate Whisper only
+.venv/bin/python tools/run_eval.py \
+  --ground-truth path/to/Song.json \
+  --skip-mert --skip-wav2vec
+```
+
+**Summary chart** — `tools/plot_summary.py` reads all `.log` files in a directory and
+generates a grouped bar chart (one bar group per model, one bar per audio tag).
+
+```bash
+.venv/bin/python tools/plot_summary.py --logs-dir logs/song_results
+
+# Include existing logs from outside the dir (e.g. a previously run Whisper base)
+.venv/bin/python tools/plot_summary.py \
+  --logs-dir logs/song_results \
+  --extra-logs logs/speech_accuracy_Song_20260525_180142.log
 ```
 
 **Whisper benchmark** — `tools/benchmark_whisper.py` is a standalone script (no project
@@ -145,7 +179,7 @@ inside `Transcriber.load()`).
 
 1. Add a new value to the `Mode` enum in `modes.py`.
 2. Create `src/propresenter_speech/handlers/<mode_name>.py` implementing the `ModeHandler` protocol
-   (`on_startup`, `startup_description`, `on_transcription`).
+   (`on_startup`, `startup_description`, `on_prediction`).
 3. Export the new class from `handlers/__init__.py`.
 4. Add the mode choice to `--mode` in `main.py` and wire the handler into the dispatch block.
 5. Add tests in `tests/test_handler_<mode_name>.py`.
@@ -171,7 +205,7 @@ inside `Transcriber.load()`).
    words ending at that position form the trigger phrase.  Each transcribed segment is
    checked against both `CommandParser` **and** `SlideFollower.matches()`.  An explicit
    command always takes priority.
-4. On a trigger match, `FollowHandler.on_transcription()` loops: it calls
+4. On a trigger match, `FollowHandler.on_prediction()` loops: it calls
    `next_slide()` then `SlideFollower.refresh_after_advance()` which increments the
    locally cached slide index **without** calling `GET /v1/presentation/slide_index`
    again.  This avoids the race condition where the API still returns the pre-advance
@@ -205,9 +239,11 @@ ProPresenter API reference: `http://<propresenter-ip>:1025/v1/doc/index.html#`
 3. **Poll loop** — a background thread wakes every `poll_interval` seconds.  If Whisper is not
    busy and the buffer holds at least 0.5 s of audio it snapshots the buffer and spawns a
    transcription thread.
-4. **Transcription + matching** — `Transcriber.transcribe()` runs on the snapshot.  The resulting
-   words are appended to a rolling `word_buffer` (capped at 200 words).  The last `context_words`
-   words form the query string for `SlideEmbedder.find_slide_with_margin()`.
+4. **Transcription + matching** — `WhisperPredictor.predict()` runs on the snapshot.  New
+   words are appended to its internal 200-word rolling `_word_buffer`.  The result
+   (`TranscriptionResult`) is passed to `FollowEnhancedHandler.on_prediction()`, which takes
+   the last `context_words` words from `result.word_buffer` as the query string for
+   `SlideEmbedder.find_slide_with_margin()`.
 5. **Cue logic** — a slide is cued when:
    - `confidence >= similarity_threshold`, **or** `margin >= min_margin`
    - the result is a different slide from the currently cued one

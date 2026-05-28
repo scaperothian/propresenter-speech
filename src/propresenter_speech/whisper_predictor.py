@@ -24,11 +24,10 @@ class WhisperPredictor:
         self._verbose = verbose
         self._word_buffer: collections.deque[str] = collections.deque(maxlen=200)
 
-    def predict(self, audio: np.ndarray) -> TranscriptionResult | None:
+    def predict(self, audio: np.ndarray) -> TranscriptionResult:
         text = self._transcriber.transcribe(audio)
-        if not text.strip():
-            return None
-        if self._verbose:
-            print(f"  heard: {text!r}")
-        self._word_buffer.extend(extract_words(text))
+        if text.strip():
+            if self._verbose:
+                print(f"  heard: {text!r}")
+            self._word_buffer.extend(extract_words(text))
         return TranscriptionResult(text=text, word_buffer=self._word_buffer)

@@ -37,7 +37,7 @@ from .handlers.follow_semantic_words import (
     DEFAULT_SIMILARITY_THRESHOLD,
 )
 from .modes import Mode
-from .separation import DEFAULT_DEMUCS_MODEL, DemucsSeparator
+from .separation import DEFAULT_DEMUCS_MODEL, SourceSeparator, build_separator
 from .slide_embedder import SlideEmbedder, WordWindowEmbedder
 from .slide_follower import SlideFollower
 from .transcriber import Transcriber
@@ -203,6 +203,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     sep_grp.add_argument(
+        "--separation-backend",
+        default="auto",
+        choices=["auto", "demucs", "demucs-mlx"],
+        dest="separation_backend",
+        help=(
+            "auto:       demucs-mlx (Apple GPU) if installed, else torch demucs\n"
+            "demucs:     torch Demucs (--extras separation)\n"
+            "demucs-mlx: MLX Demucs on Apple Silicon (--extras separation-mlx)"
+        ),
+    )
+    sep_grp.add_argument(
         "--separation-model",
         default=DEFAULT_DEMUCS_MODEL,
         choices=["htdemucs", "htdemucs_ft"],
@@ -214,7 +225,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default="auto",
         choices=["auto", "cpu", "mps", "cuda"],
         dest="separation_device",
-        help="Torch device for Demucs inference",
+        help="Torch device for the demucs backend (ignored by demucs-mlx)",
     )
 
     audio_grp = parser.add_argument_group("Audio pipeline")
@@ -357,20 +368,18 @@ def _build_predictor(args):
     return WhisperPredictor(transcriber, verbose=args.verbose)
 
 
-def _build_separator(args, mode: Mode) -> DemucsSeparator | None:
+def _build_separator(args, mode: Mode) -> SourceSeparator | None:
     enabled = args.source_separation == "on" or (
         args.source_separation == "auto" and mode == Mode.FOLLOW_SEMANTIC_WORDS
     )
     if not enabled:
         return None
-    print(f"Loading Demucs '{args.separation_model}' — this may take a moment on first run…")
-    separator = DemucsSeparator(
+    separator = build_separator(
+        backend=args.separation_backend,
         model_name=args.separation_model,
         device=args.separation_device,
         verbose=args.verbose,
     )
-    separator.load()
-    print(f"Demucs ready (device: {separator.device}).")
     return separator
 
 

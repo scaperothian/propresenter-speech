@@ -20,6 +20,8 @@ HTTP API to advance, retreat, or jump to a specific slide.
 | Command parsing | `src/propresenter_speech/command_parser.py` | pure Python, no I/O |
 | Source-separator protocol | `src/propresenter_speech/separation/base.py` | `SourceSeparator` Protocol — `separate(audio) -> audio`; 16 kHz float32 mono in/out, equal length; decoupled from predictors/handlers so implementations are swappable |
 | Demucs separator | `src/propresenter_speech/separation/demucs.py` | `DemucsSeparator` — htdemucs/htdemucs_ft vocal isolation; upsamples 16 kHz → 44.1 kHz, fakes stereo, takes `vocals` stem, downmixes back; auto device (cuda > mps > cpu) with permanent cpu fallback on runtime failure; requires separation extra |
+| Demucs-MLX separator | `src/propresenter_speech/separation/demucs_mlx.py` | `MLXDemucsSeparator` — same 16 kHz↔44.1 kHz path as `DemucsSeparator` but runs demucs-mlx on the Apple GPU (in-process via `Separator.separate_tensor`, no torch); far better RTF than torch Demucs, which can't use MPS (CPU-only); requires separation-mlx extra (Apple Silicon) |
+| Separator factory | `src/propresenter_speech/separation/factory.py` | `build_separator(backend, model_name, …)` — resolves `--separation-backend` (`auto`/`demucs`/`demucs-mlx`); `auto` prefers demucs-mlx when importable, falling back to torch Demucs; shared by `main.py` and the accuracy evaluator |
 | Mic audio pipeline | `src/propresenter_speech/audio_pipeline.py` | `_BasePipeline` (model-agnostic: `predictor`, optional `separator` applied before `predict()`, `_model_busy`) + `AudioPipeline` — ring-buffer mic capture; polls `Predictor.predict()` on a timer; calls `ModeHandler.on_prediction()` |
 | File audio pipeline | `src/propresenter_speech/file_pipeline.py` | `FilePipeline(_BasePipeline)` — sliding-window file processing used by the accuracy evaluator; `_resample` lives here |
 | Mode enum | `src/propresenter_speech/modes.py` | `Mode.PRESENTATION` / `Mode.FOLLOW_TRIGGER_WORDS` / `Mode.FOLLOW_SEMANTIC_WORDS` / `Mode.FOLLOW_SEMANTIC_AUDIO` |
@@ -42,7 +44,8 @@ HTTP API to advance, retreat, or jump to a specific slide.
 | Wav2Vec2-ALT benchmark | `tools/benchmark_wav2vec2_alt.py` | standalone; loads SpeechBrain CKPT+... checkpoint; `--ckpt-dir` selects path |
 | MERT benchmark | `tools/benchmark_mert.py` | standalone; `m-a-p/MERT-v1-95M`; 24 kHz synthetic audio; `--model` selects variant |
 | Demucs benchmark | `tools/benchmark_demucs.py` | standalone; measures the full vocal-isolation path (16 kHz → 44.1 kHz → separate → 16 kHz); `--model` / `--device` selectable |
-| All-models benchmark | `tools/benchmark_all.py` | standalone rollup; runs Whisper + Wav2Vec2 + Wav2Vec2-ALT + MERT + Demucs in one pass; prints unified comparison table; each backend skippable with `--skip-*` |
+| Demucs-MLX benchmark | `tools/benchmark_demucs_mlx.py` | standalone; same path on the Apple GPU via demucs-mlx; `--model` selectable; requires separation-mlx extra |
+| All-models benchmark | `tools/benchmark_all.py` | standalone rollup; runs Whisper + Wav2Vec2 + Wav2Vec2-ALT + MERT + Demucs + Demucs-MLX in one pass; prints unified comparison table; each backend skippable with `--skip-*` |
 | ProPresenter HTTP client | `../propresenter-client/src/propresenter_client/main.py` | imported via path dependency |
 
 ## Project conventions
@@ -61,8 +64,11 @@ poetry install
 # Install torch-dependent backends (wav2vec2, wav2vec2-alt, MERT)
 poetry install --extras torch
 
-# Install Demucs source separation (vocal isolation)
+# Install Demucs source separation (vocal isolation, torch — CPU-only on Mac)
 poetry install --extras separation
+
+# Install demucs-mlx source separation (Apple GPU — much better RTF on Apple Silicon)
+poetry install --extras separation-mlx
 
 # Verify ProPresenter is running locally on port 1025, then:
 poetry run propresenter-speech                                   # presentation mode (default)
@@ -84,6 +90,11 @@ poetry run propresenter-speech --mode follow-semantic-words                     
 poetry run propresenter-speech --mode follow-semantic-words --source-separation off
 poetry run propresenter-speech --mode presentation --source-separation on
 poetry run propresenter-speech --source-separation on --separation-model htdemucs_ft --separation-device cpu
+
+# Separation backend (--separation-backend auto is the default: demucs-mlx on the
+# Apple GPU if installed, else torch Demucs; force either explicitly)
+poetry run propresenter-speech --mode follow-semantic-words --separation-backend demucs-mlx
+poetry run propresenter-speech --source-separation on --separation-backend demucs
 
 # Common flags
 poetry run propresenter-speech --model small            # better Whisper accuracy
@@ -113,10 +124,15 @@ poetry run speech-accuracy-batch \
   --ground-truth-dir ../propresenter-train/output/ --model base
 
 # A/B the Demucs vocal-isolation impact (default off so baselines stay comparable;
-# the JSONL summary records "source_separation": "htdemucs" | "htdemucs_ft" | "off")
+# the JSONL summary records "source_separation": "htdemucs" | "htdemucs-mlx" |
+# "htdemucs_ft" | "off" — the "-mlx" suffix marks the Apple-GPU backend)
 poetry run speech-accuracy \
   --ground-truth ../propresenter-train/output/"Mary Had A Little Lamb.json" \
   --model base --source-separation on
+# Force the Apple-GPU backend (else --separation-backend auto picks it when installed)
+poetry run speech-accuracy \
+  --ground-truth ../propresenter-train/output/"Mary Had A Little Lamb.json" \
+  --model base --source-separation on --separation-backend demucs-mlx
 ```
 
 **Ground-truth JSON** lives in `../propresenter-train/output/`.  Two timing formats are
@@ -189,8 +205,9 @@ python tools/benchmark_whisper.py                        # all Whisper sizes
 python tools/benchmark_wav2vec2.py                       # Wav2Vec2ForCTC
 python tools/benchmark_wav2vec2_alt.py --ckpt-dir PATH   # Wav2Vec2-ALT
 python tools/benchmark_mert.py                           # MERT-v1-95M
-python tools/benchmark_demucs.py                         # Demucs vocal isolation
+python tools/benchmark_demucs.py                         # Demucs vocal isolation (torch)
 python tools/benchmark_demucs.py --model htdemucs_ft --device cpu
+python tools/benchmark_demucs_mlx.py                     # Demucs on Apple GPU (demucs-mlx)
 
 # Unified comparison table across all backends
 python tools/benchmark_all.py
@@ -336,7 +353,10 @@ protocol (`separate(audio) -> audio`) can replace it.
 
 1. **Enablement** — `--source-separation auto` (default) turns it on only in
    `follow-semantic-words` mode; `on`/`off` force it for any mode.  `main.py:_build_separator()`
-   loads the model up front so the first mic window isn't delayed.
+   loads the model up front so the first mic window isn't delayed.  `--separation-backend`
+   (`auto`/`demucs`/`demucs-mlx`) picks the implementation via `separation/factory.py:build_separator()`;
+   `auto` prefers `MLXDemucsSeparator` (demucs-mlx, Apple GPU) when the `separation-mlx` extra
+   is importable, otherwise the torch `DemucsSeparator`.  Both share the identical window path.
 2. **Per-window isolation** — each 16 kHz window is upsampled to 44.1 kHz (Demucs's native
    rate), duplicated mono → stereo, normalised, run through `demucs.apply.apply_model`,
    and the `vocals` stem is denormalised, downmixed to mono, and resampled back to 16 kHz
@@ -353,6 +373,13 @@ protocol (`separate(audio) -> audio`) can replace it.
    logs a warning, and falls back to cpu permanently.
 4. **First run** — htdemucs (~80 MB) / htdemucs_ft (~320 MB) download from
    dl.fbaipublicfiles.com into the torch-hub cache.
+5. **demucs-mlx backend (`MLXDemucsSeparator`)** — the same per-window path, but the
+   separation step runs on the Apple GPU via demucs-mlx's in-memory
+   `Separator.separate_tensor()` (no torch, no temp files).  This sidesteps the MPS conv
+   limit entirely (which forces the torch backend to CPU at RTF ≈ 1.6) and is the
+   recommended path on Apple Silicon for live mode.  demucs-mlx is **torch-independent**
+   (torch appears only in its optional `convert` extra), so it co-installs cleanly with the
+   project's torch.  First run converts the htdemucs weights into `~/.cache/demucs-mlx`.
 
 ## Audio tuning
 

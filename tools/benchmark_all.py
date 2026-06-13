@@ -8,6 +8,7 @@ Runs synthetic-audio timing loops for:
   - Wav2Vec2-ALT (SpeechBrain lyric-tuned checkpoint)
   - MERT (m-a-p/MERT-v1-95M)
   - Demucs (htdemucs vocal isolation — preprocessing, not ASR)
+  - Demucs-mlx (htdemucs on the Apple GPU via MLX — preprocessing, not ASR)
 
 Each section can be skipped with --skip-* flags.  Results are printed in a
 single comparison table at the end.
@@ -256,6 +257,55 @@ def bench_demucs(audio_16k: "np.ndarray", duration: float, runs: int, warmup: in
             "rtf": avg_ms / 1000 / duration, "load_sec": load_sec}
 
 
+def bench_demucs_mlx(audio_16k: "np.ndarray", duration: float, runs: int, warmup: int) -> dict:
+    import mlx.core as mx
+    import numpy as np
+    from demucs_mlx import Separator
+
+    def _resample(audio, orig_sr, target_sr):
+        n_samples = int(len(audio) * target_sr / orig_sr)
+        return np.interp(
+            np.linspace(0, len(audio) - 1, n_samples),
+            np.arange(len(audio)),
+            audio,
+        ).astype(np.float32)
+
+    t0 = time.perf_counter()
+    sep = Separator(model=_DEMUCS_MODEL, shifts=1, overlap=0.25)
+    segment_sec = float(getattr(sep.model, "segment", 0.0) or 0.0)
+    sep.update_parameter(split=(segment_sec <= 0 or duration > segment_sec))
+    load_sec = time.perf_counter() - t0
+
+    def _infer():
+        upsampled = _resample(audio_16k, _WHISPER_SR, _DEMUCS_SR)
+        stereo = np.stack([upsampled, upsampled], axis=0)
+        ref_mean = float(stereo.mean())
+        ref_std = float(stereo.std()) + 1e-8
+        stereo = (stereo - ref_mean) / ref_std
+        _wav, stems = sep.separate_tensor(mx.array(stereo), return_mx=True)
+        vocals = stems["vocals"]
+        mx.eval(vocals)
+        vocals_np = np.asarray(vocals, dtype=np.float32) * ref_std + ref_mean
+        if vocals_np.ndim == 2:
+            ch_axis = 0 if vocals_np.shape[0] < vocals_np.shape[1] else 1
+            vocals_np = vocals_np.mean(axis=ch_axis)
+        _resample(vocals_np.astype(np.float32), _DEMUCS_SR, _WHISPER_SR)
+
+    for _ in range(warmup):
+        _infer()
+
+    latencies = []
+    for _ in range(runs):
+        t0 = time.perf_counter()
+        _infer()
+        latencies.append((time.perf_counter() - t0) * 1000)
+
+    avg_ms = sum(latencies) / len(latencies)
+    return {"label": f"Demucs-mlx {_DEMUCS_MODEL} (GPU)", "avg_ms": avg_ms,
+            "min_ms": min(latencies), "max_ms": max(latencies),
+            "rtf": avg_ms / 1000 / duration, "load_sec": load_sec}
+
+
 # ─── Table printer ────────────────────────────────────────────────────────────
 
 def _print_table(results: list[dict], duration: float) -> None:
@@ -306,6 +356,7 @@ def main() -> None:
     parser.add_argument("--skip-wav2vec-alt", action="store_true")
     parser.add_argument("--skip-mert", action="store_true")
     parser.add_argument("--skip-demucs", action="store_true")
+    parser.add_argument("--skip-demucs-mlx", action="store_true")
     parser.add_argument("--wav2vec-alt-ckpt", type=Path, default=_DEFAULT_CKPT,
                         metavar="PATH",
                         help="Path to SpeechBrain CKPT+... directory")
@@ -330,6 +381,11 @@ def main() -> None:
             import demucs  # noqa: F401
         except ImportError:
             missing.append("demucs  (poetry install --extras separation)")
+    if not args.skip_demucs_mlx:
+        try:
+            import demucs_mlx  # noqa: F401
+        except ImportError:
+            missing.append("demucs-mlx  (poetry install --extras separation-mlx)")
     if missing:
         for m in missing:
             print(f"Error: missing {m}")
@@ -399,6 +455,18 @@ def main() -> None:
         except Exception as exc:
             print(f"FAILED: {exc}")
             errors.append(f"Demucs: {exc}")
+
+    # Demucs-mlx (Apple GPU)
+    if not args.skip_demucs_mlx:
+        audio_16k = _synth(d, _WHISPER_SR)
+        print("[Demucs-mlx] loading ...", end=" ", flush=True)
+        try:
+            r = bench_demucs_mlx(audio_16k, d, runs, warmup)
+            print(f"done  avg={r['avg_ms']:.0f}ms  RTF={r['rtf']:.3f}x")
+            results.append(r)
+        except Exception as exc:
+            print(f"FAILED: {exc}")
+            errors.append(f"Demucs-mlx: {exc}")
 
     if results:
         _print_table(results, d)

@@ -32,6 +32,11 @@ Four modes of operation:
 > **`follow-semantic-audio` note:** The MERT model (`m-a-p/MERT-v1-95M`, ~380 MB) requires the
 > torch extra: `poetry install --extras torch`.  A propresenter-train ground-truth JSON file is
 > also required to build slide prototypes at startup.
+>
+> **Source-separation note:** Vocal isolation is optional.  On Apple Silicon, install the
+> `separation-mlx` extra to run Demucs on the Apple GPU (`demucs-mlx`) — roughly 3× faster than
+> the torch `separation` extra, which is CPU-only on Mac (htdemucs can't run on MPS).  The default
+> `--separation-backend auto` uses demucs-mlx when installed and falls back to torch Demucs.
 
 ---
 
@@ -47,8 +52,11 @@ poetry install
 # For wav2vec2 / wav2vec2-alt / MERT backends (requires PyTorch 2.7.0+)
 poetry install --extras torch
 
-# For Demucs source separation (vocal isolation before ASR)
+# For Demucs source separation (vocal isolation before ASR — torch, CPU-only on Mac)
 poetry install --extras separation
+
+# For demucs-mlx source separation (Apple GPU — much better real-time factor on Apple Silicon)
+poetry install --extras separation-mlx
 
 # Verify the CLI is available
 poetry run propresenter-speech --help
@@ -149,10 +157,14 @@ Source separation:
                               off otherwise (default)
                         on:   always isolate vocals before ASR (requires --extras separation)
                         off:  never isolate
+  --separation-backend {auto,demucs,demucs-mlx}
+                        auto:       demucs-mlx (Apple GPU) if installed, else torch demucs (default)
+                        demucs:     torch Demucs (--extras separation)
+                        demucs-mlx: MLX Demucs on the Apple GPU (--extras separation-mlx)
   --separation-model {htdemucs,htdemucs_ft}
                         Demucs model (default: htdemucs; htdemucs_ft: higher quality, ~4x slower)
   --separation-device {auto,cpu,mps,cuda}
-                        Torch device for Demucs inference (default: auto)
+                        Torch device for the demucs backend; ignored by demucs-mlx (default: auto)
 
 Audio pipeline:
   --device DEVICE       Input device index; see --list-devices (default: system default)
@@ -198,6 +210,9 @@ poetry run propresenter-speech --mode follow-semantic-audio \
 poetry run propresenter-speech --mode follow-semantic-words --source-separation off
 poetry run propresenter-speech --mode presentation --source-separation on
 
+# Separation backend: auto picks the Apple-GPU demucs-mlx when installed (best RTF), else torch
+poetry run propresenter-speech --mode follow-semantic-words --separation-backend demucs-mlx
+
 # Use a more accurate Whisper model
 poetry run propresenter-speech --model small
 
@@ -229,6 +244,9 @@ Microphone
     ▼
 AudioPipeline          (sounddevice ring buffer, poll every --poll-interval s)
     │  audio chunk
+    ▼
+SourceSeparator.separate()   (optional, --source-separation; vocal isolation)
+    │                         DemucsSeparator (torch) or MLXDemucsSeparator (Apple GPU)
     ▼
 Predictor.predict()
     │

@@ -26,7 +26,11 @@ from .evaluator import (
 )
 from propresenter_speech.audio_pipeline import DEFAULT_POLL_INTERVAL, DEFAULT_WINDOW_SECONDS
 from propresenter_speech.handlers.follow_semantic_words import DEFAULT_MIN_MARGIN, DEFAULT_SIMILARITY_THRESHOLD
-from propresenter_speech.separation import DEFAULT_DEMUCS_MODEL, DemucsSeparator
+from propresenter_speech.separation import (
+    DEFAULT_DEMUCS_MODEL,
+    SourceSeparator,
+    build_separator,
+)
 from propresenter_speech.slide_embedder import SlideEmbedder, WordWindowEmbedder
 from propresenter_speech.transcriber import Transcriber
 
@@ -154,6 +158,16 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--separation-backend",
+        default="auto",
+        choices=["auto", "demucs", "demucs-mlx"],
+        dest="separation_backend",
+        help=(
+            "auto: demucs-mlx (Apple GPU) if installed, else torch demucs\n"
+            "demucs: torch Demucs; demucs-mlx: MLX Demucs on Apple Silicon"
+        ),
+    )
+    parser.add_argument(
         "--separation-model",
         default=DEFAULT_DEMUCS_MODEL,
         choices=["htdemucs", "htdemucs_ft"],
@@ -165,7 +179,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         default="auto",
         choices=["auto", "cpu", "mps", "cuda"],
         dest="separation_device",
-        help="Torch device for Demucs inference",
+        help="Torch device for the demucs backend (ignored by demucs-mlx)",
     )
     parser.add_argument("--verbose", action="store_true", help="Print every inference step to stdout")
     parser.add_argument(
@@ -180,22 +194,22 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
 # Single-file evaluation
 # ---------------------------------------------------------------------------
 
-def _build_separator(args) -> DemucsSeparator | None:
+def _build_separator(args) -> SourceSeparator | None:
     if args.source_separation != "on":
         return None
-    print(f"Loading Demucs '{args.separation_model}' — this may take a moment on first run…")
-    separator = DemucsSeparator(
+    return build_separator(
+        backend=args.separation_backend,
         model_name=args.separation_model,
         device=args.separation_device,
         verbose=args.verbose,
     )
-    separator.load()
-    print(f"Demucs ready (device: {separator.device}).")
-    return separator
 
 
-def _separation_tag(args) -> str:
-    return args.separation_model if args.source_separation == "on" else "off"
+def _separation_tag(args, separator: SourceSeparator | None) -> str:
+    if separator is None:
+        return "off"
+    suffix = "-mlx" if getattr(separator, "device", None) == "mlx" else ""
+    return f"{args.separation_model}{suffix}"
 
 
 def _build_evaluator(ground_truth, args) -> tuple[AccuracyEvaluator, Transcriber, int]:
@@ -341,7 +355,7 @@ def speech_accuracy_main() -> None:
         embedding_mode=args.embedding_mode,
         similarity_threshold=args.similarity_threshold,
         min_margin=args.min_margin,
-        source_separation=_separation_tag(args),
+        source_separation=_separation_tag(args, evaluator.separator),
     )
     print_summary(result)
     print(f"Full event log: {log_path}")
@@ -437,7 +451,7 @@ def evaluate_all_main() -> None:
             embedding_mode=args.embedding_mode,
             similarity_threshold=args.similarity_threshold,
             min_margin=args.min_margin,
-            source_separation=_separation_tag(args),
+            source_separation=_separation_tag(args, separator),
         )
         print_summary(result)
         results.append(result)

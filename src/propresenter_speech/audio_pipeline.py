@@ -7,6 +7,9 @@ Microphone
 AudioPipeline      (sounddevice ring buffer, poll every poll_interval s)
     │  audio chunk
     ▼
+SourceSeparator.separate(chunk)   (optional — e.g. Demucs vocal isolation)
+    │  isolated-vocals chunk
+    ▼
 Predictor.predict(chunk) → result
     │
     ▼
@@ -27,6 +30,7 @@ import sounddevice as sd
 if TYPE_CHECKING:
     from .handlers.base import ModeHandler
     from .predictors import Predictor
+    from .separation import SourceSeparator
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +49,11 @@ class _BasePipeline:
         handler: "ModeHandler",
         window_seconds: float,
         poll_interval: float,
+        separator: "SourceSeparator | None" = None,
     ):
         self.predictor = predictor
         self.handler = handler
+        self.separator = separator
         self.poll_interval = poll_interval
         self._window_frames = int(window_seconds * SAMPLE_RATE)
         self._model_busy = False
@@ -56,6 +62,8 @@ class _BasePipeline:
     def _process(self, audio: np.ndarray, audio_time: float = 0.0) -> None:
         self._model_busy = True
         try:
+            if self.separator is not None:
+                audio = self.separator.separate(audio)
             result = self.predictor.predict(audio)
             if result is None:
                 return
@@ -74,8 +82,9 @@ class AudioPipeline(_BasePipeline):
         device: Optional[int] = None,
         window_seconds: float = DEFAULT_WINDOW_SECONDS,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
+        separator: "SourceSeparator | None" = None,
     ):
-        super().__init__(predictor, handler, window_seconds, poll_interval)
+        super().__init__(predictor, handler, window_seconds, poll_interval, separator=separator)
         self.device = device
         self._ring: collections.deque = collections.deque(maxlen=self._window_frames)
 

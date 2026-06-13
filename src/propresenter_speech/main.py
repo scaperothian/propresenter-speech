@@ -37,6 +37,7 @@ from .handlers.follow_semantic_words import (
     DEFAULT_SIMILARITY_THRESHOLD,
 )
 from .modes import Mode
+from .separation import DEFAULT_DEMUCS_MODEL, DemucsSeparator
 from .slide_embedder import SlideEmbedder, WordWindowEmbedder
 from .slide_follower import SlideFollower
 from .transcriber import Transcriber
@@ -189,6 +190,33 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    sep_grp = parser.add_argument_group("Source separation")
+    sep_grp.add_argument(
+        "--source-separation",
+        default="auto",
+        choices=["auto", "on", "off"],
+        dest="source_separation",
+        help=(
+            "auto: vocal isolation on in follow-semantic-words mode, off otherwise\n"
+            "on:   always isolate vocals before ASR (requires --extras separation)\n"
+            "off:  never isolate"
+        ),
+    )
+    sep_grp.add_argument(
+        "--separation-model",
+        default=DEFAULT_DEMUCS_MODEL,
+        choices=["htdemucs", "htdemucs_ft"],
+        dest="separation_model",
+        help="Demucs model (htdemucs_ft: higher quality, ~4x slower)",
+    )
+    sep_grp.add_argument(
+        "--separation-device",
+        default="auto",
+        choices=["auto", "cpu", "mps", "cuda"],
+        dest="separation_device",
+        help="Torch device for Demucs inference",
+    )
+
     audio_grp = parser.add_argument_group("Audio pipeline")
     audio_grp.add_argument(
         "--device",
@@ -329,6 +357,23 @@ def _build_predictor(args):
     return WhisperPredictor(transcriber, verbose=args.verbose)
 
 
+def _build_separator(args, mode: Mode) -> DemucsSeparator | None:
+    enabled = args.source_separation == "on" or (
+        args.source_separation == "auto" and mode == Mode.FOLLOW_SEMANTIC_WORDS
+    )
+    if not enabled:
+        return None
+    print(f"Loading Demucs '{args.separation_model}' — this may take a moment on first run…")
+    separator = DemucsSeparator(
+        model_name=args.separation_model,
+        device=args.separation_device,
+        verbose=args.verbose,
+    )
+    separator.load()
+    print(f"Demucs ready (device: {separator.device}).")
+    return separator
+
+
 def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)
     parser = _build_arg_parser()
@@ -420,12 +465,15 @@ def main() -> None:
             )
         predictor = _build_predictor(args)
 
+    separator = _build_separator(args, mode)
+
     AudioPipeline(
         predictor=predictor,
         handler=handler,
         device=args.device,
         window_seconds=args.window_seconds,
         poll_interval=args.poll_interval,
+        separator=separator,
     ).run()
 
 

@@ -18,7 +18,9 @@ HTTP API to advance, retreat, or jump to a specific slide.
 | Wav2Vec2-ALT predictor | `src/propresenter_speech/predictors/wav2vec_alt.py` | `Wav2VecAltPredictor` — SpeechBrain lyric-tuned checkpoint loaded without SpeechBrain at inference; requires torch extra |
 | MERT predictor | `src/propresenter_speech/predictors/mert.py` | `MERTPredictor` — `m-a-p/MERT-v1-95M`; resamples 16 kHz → 24 kHz internally; returns `AudioEmbeddingResult`; `embed_24k()` is used by `FollowSemanticAudioHandler` for prototype building; requires torch extra |
 | Command parsing | `src/propresenter_speech/command_parser.py` | pure Python, no I/O |
-| Mic audio pipeline | `src/propresenter_speech/audio_pipeline.py` | `_BasePipeline` (model-agnostic: `predictor`, `_model_busy`) + `AudioPipeline` — ring-buffer mic capture; polls `Predictor.predict()` on a timer; calls `ModeHandler.on_prediction()` |
+| Source-separator protocol | `src/propresenter_speech/separation/base.py` | `SourceSeparator` Protocol — `separate(audio) -> audio`; 16 kHz float32 mono in/out, equal length; decoupled from predictors/handlers so implementations are swappable |
+| Demucs separator | `src/propresenter_speech/separation/demucs.py` | `DemucsSeparator` — htdemucs/htdemucs_ft vocal isolation; upsamples 16 kHz → 44.1 kHz, fakes stereo, takes `vocals` stem, downmixes back; auto device (cuda > mps > cpu) with permanent cpu fallback on runtime failure; requires separation extra |
+| Mic audio pipeline | `src/propresenter_speech/audio_pipeline.py` | `_BasePipeline` (model-agnostic: `predictor`, optional `separator` applied before `predict()`, `_model_busy`) + `AudioPipeline` — ring-buffer mic capture; polls `Predictor.predict()` on a timer; calls `ModeHandler.on_prediction()` |
 | File audio pipeline | `src/propresenter_speech/file_pipeline.py` | `FilePipeline(_BasePipeline)` — sliding-window file processing used by the accuracy evaluator; `_resample` lives here |
 | Mode enum | `src/propresenter_speech/modes.py` | `Mode.PRESENTATION` / `Mode.FOLLOW_TRIGGER_WORDS` / `Mode.FOLLOW_SEMANTIC_WORDS` / `Mode.FOLLOW_SEMANTIC_AUDIO` |
 | Mode handler protocol | `src/propresenter_speech/handlers/base.py` | `ModeHandler` Protocol — `on_startup()`, `startup_description()`, `on_prediction(result: Any, audio_time: float)` |
@@ -28,9 +30,9 @@ HTTP API to advance, retreat, or jump to a specific slide.
 | Follow-semantic-audio mode | `src/propresenter_speech/handlers/follow_semantic_audio.py` | `FollowSemanticAudioHandler` — builds per-slide MERT prototype embeddings from `--ground-truth` reference audio at startup; matches live audio via mean-centered cosine similarity; does not parse explicit commands |
 | Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text, extracts trigger phrase via `--trigger-index` / `--trigger-words`; `refresh_after_advance()` and `refresh_to_slide()` avoid race with API propagation delay |
 | Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — one embedding per slide; `WordWindowEmbedder` — one embedding per word position (configurable stride), slides passed as `(slide_idx, text)` pairs in chronological order so repeated sections resolve correctly; both expose `find_slide_with_margin()` and `avg_words_per_slide` |
-| CLI entry point | `src/propresenter_speech/main.py` | argparse, builds predictor + handler + `AudioPipeline`, calls `.run()`; `_build_predictor()` factory for text-based modes; audio mode builds `MERTPredictor` directly and reuses it as both handler and pipeline predictor |
+| CLI entry point | `src/propresenter_speech/main.py` | argparse, builds predictor + handler + `AudioPipeline`, calls `.run()`; `_build_predictor()` factory for text-based modes; `_build_separator()` — `--source-separation auto` enables Demucs only in follow-semantic-words mode; audio mode builds `MERTPredictor` directly and reuses it as both handler and pipeline predictor |
 | Accuracy evaluator | `src/speech_accuracy/evaluator.py` | `load_ground_truth()`, `AccuracyHandler`, `AccuracyEvaluator`, `EvaluationResult`; feeds audio through `FilePipeline` + `WhisperPredictor` with `AccuracyHandler` in place of the normal slide-cue handler; mirrors `FollowSemanticWordsHandler` gate (confidence OR margin threshold) via `_current_pred_idx`; scores each inference call against propresenter-train JSON ground truth using T_snap timing |
-| Accuracy CLI | `src/speech_accuracy/main.py` | `speech-accuracy` (single file) and `speech-accuracy-batch` (batch) entry points; JSONL event logging includes `audio_file`, `ground_truth_file`, `embedding_mode`, `similarity_threshold`, `min_margin` |
+| Accuracy CLI | `src/speech_accuracy/main.py` | `speech-accuracy` (single file) and `speech-accuracy-batch` (batch) entry points; JSONL event logging includes `audio_file`, `ground_truth_file`, `embedding_mode`, `source_separation`, `similarity_threshold`, `min_margin`; `--source-separation on` (default off so baselines stay comparable) isolates vocals before transcription |
 | Accuracy plot | `src/speech_accuracy/plot.py` | `speech-accuracy-plot` — offline 4-panel matplotlib visualiser: waveform, confidence, margin, predicted slide index; reads JSONL log + audio file + ground-truth JSON |
 | Multi-model eval runner | `src/speech_accuracy/run_eval.py` | `speech-accuracy-run-eval` CLI entry point; runs Whisper, MERT, and wav2vec-alt evaluations against one or more ground-truth JSON files; `--ground-truth` accepts any propresenter-train JSON; tags derived from filename stems; `--whisper-models` selects model sizes; `TRANSFORMERS_OFFLINE=1` set for MERT subprocess |
 | Pairwise similarity chart | `src/speech_accuracy/whisper_pairwise.py` | `speech-accuracy-pairwise` CLI entry point; section×section text-embedding similarity grid using `all-MiniLM-L6-v2`; outputs PNG heatmap |
@@ -39,7 +41,8 @@ HTTP API to advance, retreat, or jump to a specific slide.
 | Wav2Vec2 benchmark | `tools/benchmark_wav2vec2.py` | standalone; `facebook/wav2vec2-large-960h-lv60-self`; measures per-call latency and RTF |
 | Wav2Vec2-ALT benchmark | `tools/benchmark_wav2vec2_alt.py` | standalone; loads SpeechBrain CKPT+... checkpoint; `--ckpt-dir` selects path |
 | MERT benchmark | `tools/benchmark_mert.py` | standalone; `m-a-p/MERT-v1-95M`; 24 kHz synthetic audio; `--model` selects variant |
-| All-models benchmark | `tools/benchmark_all.py` | standalone rollup; runs Whisper + Wav2Vec2 + Wav2Vec2-ALT + MERT in one pass; prints unified comparison table; each backend skippable with `--skip-*` |
+| Demucs benchmark | `tools/benchmark_demucs.py` | standalone; measures the full vocal-isolation path (16 kHz → 44.1 kHz → separate → 16 kHz); `--model` / `--device` selectable |
+| All-models benchmark | `tools/benchmark_all.py` | standalone rollup; runs Whisper + Wav2Vec2 + Wav2Vec2-ALT + MERT + Demucs in one pass; prints unified comparison table; each backend skippable with `--skip-*` |
 | ProPresenter HTTP client | `../propresenter-client/src/propresenter_client/main.py` | imported via path dependency |
 
 ## Project conventions
@@ -58,6 +61,9 @@ poetry install
 # Install torch-dependent backends (wav2vec2, wav2vec2-alt, MERT)
 poetry install --extras torch
 
+# Install Demucs source separation (vocal isolation)
+poetry install --extras separation
+
 # Verify ProPresenter is running locally on port 1025, then:
 poetry run propresenter-speech                                   # presentation mode (default)
 poetry run propresenter-speech --mode follow-trigger-words       # trigger-word auto-advance
@@ -71,6 +77,13 @@ poetry run propresenter-speech --mode follow-semantic-audio \
 # ASR backend (default: whisper)
 poetry run propresenter-speech --asr-backend wav2vec2
 poetry run propresenter-speech --asr-backend wav2vec2-alt
+
+# Source separation (--source-separation auto is the default: Demucs vocal
+# isolation runs only in follow-semantic-words mode; on/off force it anywhere)
+poetry run propresenter-speech --mode follow-semantic-words                          # separation auto-on
+poetry run propresenter-speech --mode follow-semantic-words --source-separation off
+poetry run propresenter-speech --mode presentation --source-separation on
+poetry run propresenter-speech --source-separation on --separation-model htdemucs_ft --separation-device cpu
 
 # Common flags
 poetry run propresenter-speech --model small            # better Whisper accuracy
@@ -98,6 +111,12 @@ poetry run speech-accuracy \
 # All presentations in a directory
 poetry run speech-accuracy-batch \
   --ground-truth-dir ../propresenter-train/output/ --model base
+
+# A/B the Demucs vocal-isolation impact (default off so baselines stay comparable;
+# the JSONL summary records "source_separation": "htdemucs" | "htdemucs_ft" | "off")
+poetry run speech-accuracy \
+  --ground-truth ../propresenter-train/output/"Mary Had A Little Lamb.json" \
+  --model base --source-separation on
 ```
 
 **Ground-truth JSON** lives in `../propresenter-train/output/`.  Two timing formats are
@@ -170,6 +189,8 @@ python tools/benchmark_whisper.py                        # all Whisper sizes
 python tools/benchmark_wav2vec2.py                       # Wav2Vec2ForCTC
 python tools/benchmark_wav2vec2_alt.py --ckpt-dir PATH   # Wav2Vec2-ALT
 python tools/benchmark_mert.py                           # MERT-v1-95M
+python tools/benchmark_demucs.py                         # Demucs vocal isolation
+python tools/benchmark_demucs.py --model htdemucs_ft --device cpu
 
 # Unified comparison table across all backends
 python tools/benchmark_all.py
@@ -305,6 +326,33 @@ ProPresenter API reference: `http://<propresenter-ip>:1025/v1/doc/index.html#`
    similarity against all centred prototypes.  Best match above threshold → `go_to_slide()`.
 4. **Cue logic** — same gate as follow-semantic-words: `confidence >= similarity_threshold` **or**
    `margin >= min_margin`; skips if the best match is the currently cued slide.
+
+## Source separation — how it works
+
+`DemucsSeparator` is an optional preprocessing stage applied by `_BasePipeline._process()`
+to each audio window **before** `Predictor.predict()`.  It is fully decoupled from
+predictors, handlers, and embedders — anything implementing the `SourceSeparator`
+protocol (`separate(audio) -> audio`) can replace it.
+
+1. **Enablement** — `--source-separation auto` (default) turns it on only in
+   `follow-semantic-words` mode; `on`/`off` force it for any mode.  `main.py:_build_separator()`
+   loads the model up front so the first mic window isn't delayed.
+2. **Per-window isolation** — each 16 kHz window is upsampled to 44.1 kHz (Demucs's native
+   rate), duplicated mono → stereo, normalised, run through `demucs.apply.apply_model`,
+   and the `vocals` stem is denormalised, downmixed to mono, and resampled back to 16 kHz
+   at the original length.  Mic capture is 16 kHz so content above 8 kHz is lost before
+   Demucs sees it; vocal energy sits mostly below 8 kHz, so isolation still works.
+3. **Latency behaviour** — separation runs inside the `_model_busy`-guarded worker thread,
+   so a slow window causes skipped polls (fewer updates per second), never a backlog.
+   Windows shorter than the model's training segment (7.8 s for htdemucs) use `split=False`,
+   which roughly halves latency.  Measured on an Apple-Silicon CPU (torch 2.7.0): ~3.2 s per
+   2 s window (RTF ≈ 1.6) — live mode yields a slide-match update every ~3–4 s rather than
+   every poll.  `htdemucs_ft` (a 4-model bag, ~4× slower) is realistically for offline
+   evaluation only.  Device resolution is cuda > mps > cpu; **htdemucs does not run on MPS**
+   (`Output channels > 65536 not supported`, torch 2.7) — the separator catches the failure,
+   logs a warning, and falls back to cpu permanently.
+4. **First run** — htdemucs (~80 MB) / htdemucs_ft (~320 MB) download from
+   dl.fbaipublicfiles.com into the torch-hub cache.
 
 ## Audio tuning
 

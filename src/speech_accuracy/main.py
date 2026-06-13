@@ -26,6 +26,7 @@ from .evaluator import (
 )
 from propresenter_speech.audio_pipeline import DEFAULT_POLL_INTERVAL, DEFAULT_WINDOW_SECONDS
 from propresenter_speech.handlers.follow_semantic_words import DEFAULT_MIN_MARGIN, DEFAULT_SIMILARITY_THRESHOLD
+from propresenter_speech.separation import DEFAULT_DEMUCS_MODEL, DemucsSeparator
 from propresenter_speech.slide_embedder import SlideEmbedder, WordWindowEmbedder
 from propresenter_speech.transcriber import Transcriber
 
@@ -142,6 +143,30 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         metavar="N",
         help="(word-window mode) words to advance between successive windows (default: 1)",
     )
+    parser.add_argument(
+        "--source-separation",
+        default="off",
+        choices=["on", "off"],
+        dest="source_separation",
+        help=(
+            "on: isolate vocals with Demucs before transcription\n"
+            "(default off so results stay comparable with existing baselines)"
+        ),
+    )
+    parser.add_argument(
+        "--separation-model",
+        default=DEFAULT_DEMUCS_MODEL,
+        choices=["htdemucs", "htdemucs_ft"],
+        dest="separation_model",
+        help="Demucs model (htdemucs_ft: higher quality, ~4x slower)",
+    )
+    parser.add_argument(
+        "--separation-device",
+        default="auto",
+        choices=["auto", "cpu", "mps", "cuda"],
+        dest="separation_device",
+        help="Torch device for Demucs inference",
+    )
     parser.add_argument("--verbose", action="store_true", help="Print every inference step to stdout")
     parser.add_argument(
         "--log-level",
@@ -154,6 +179,24 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
 # ---------------------------------------------------------------------------
 # Single-file evaluation
 # ---------------------------------------------------------------------------
+
+def _build_separator(args) -> DemucsSeparator | None:
+    if args.source_separation != "on":
+        return None
+    print(f"Loading Demucs '{args.separation_model}' — this may take a moment on first run…")
+    separator = DemucsSeparator(
+        model_name=args.separation_model,
+        device=args.separation_device,
+        verbose=args.verbose,
+    )
+    separator.load()
+    print(f"Demucs ready (device: {separator.device}).")
+    return separator
+
+
+def _separation_tag(args) -> str:
+    return args.separation_model if args.source_separation == "on" else "off"
+
 
 def _build_evaluator(ground_truth, args) -> tuple[AccuracyEvaluator, Transcriber, int]:
     slide_texts = [s.text for s in ground_truth]
@@ -192,6 +235,7 @@ def _build_evaluator(ground_truth, args) -> tuple[AccuracyEvaluator, Transcriber
         similarity_threshold=args.similarity_threshold,
         min_margin=args.min_margin,
         verbose=args.verbose,
+        separator=_build_separator(args),
     )
     return evaluator, transcriber, context_words
 
@@ -209,6 +253,7 @@ def _write_result_jsonl(
     embedding_mode: str = "",
     similarity_threshold: float = 0.4,
     min_margin: float = 0.15,
+    source_separation: str = "off",
 ) -> None:
     """Append all inference events + a summary record to the JSONL log."""
     with open(log_path, "a", encoding="utf-8") as f:
@@ -220,6 +265,7 @@ def _write_result_jsonl(
             "audio_file": result.audio_path,
             "ground_truth_file": gt_path,
             "embedding_mode": embedding_mode,
+            "source_separation": source_separation,
             "model": result.model_name,
             "window_seconds": result.window_seconds,
             "poll_interval": result.poll_interval,
@@ -295,6 +341,7 @@ def speech_accuracy_main() -> None:
         embedding_mode=args.embedding_mode,
         similarity_threshold=args.similarity_threshold,
         min_margin=args.min_margin,
+        source_separation=_separation_tag(args),
     )
     print_summary(result)
     print(f"Full event log: {log_path}")
@@ -341,6 +388,8 @@ def evaluate_all_main() -> None:
     transcriber.load()
     print("Whisper ready.\n")
 
+    separator = _build_separator(args)
+
     results: list[EvaluationResult] = []
 
     for gt_path in json_files:
@@ -375,6 +424,7 @@ def evaluate_all_main() -> None:
             similarity_threshold=args.similarity_threshold,
             min_margin=args.min_margin,
             verbose=args.verbose,
+            separator=separator,
         )
 
         log_path = args.log_file or _default_log_path(name)
@@ -387,6 +437,7 @@ def evaluate_all_main() -> None:
             embedding_mode=args.embedding_mode,
             similarity_threshold=args.similarity_threshold,
             min_margin=args.min_margin,
+            source_separation=_separation_tag(args),
         )
         print_summary(result)
         results.append(result)

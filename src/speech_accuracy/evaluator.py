@@ -46,13 +46,16 @@ import json
 import logging
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from propresenter_speech.audio_pipeline import DEFAULT_WINDOW_SECONDS, DEFAULT_POLL_INTERVAL
 from propresenter_speech.file_pipeline import FilePipeline
 from propresenter_speech.predictors import TranscriptionResult, WhisperPredictor
 from propresenter_speech.slide_embedder import SlideEmbedder, WordWindowEmbedder
 from propresenter_speech.transcriber import Transcriber
+
+if TYPE_CHECKING:
+    from propresenter_speech.separation import SourceSeparator
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +303,7 @@ class AccuracyEvaluator:
         similarity_threshold: float = 0.4,
         min_margin: float = 0.15,
         verbose: bool = False,
+        separator: "SourceSeparator | None" = None,
     ):
         self.transcriber = transcriber
         self.embedder = embedder
@@ -310,6 +314,7 @@ class AccuracyEvaluator:
         self.similarity_threshold = similarity_threshold
         self.min_margin = min_margin
         self.verbose = verbose
+        self.separator = separator
 
     def evaluate(self, audio_path: str, presentation_name: str, model_name: str) -> EvaluationResult:
         import soundfile as sf
@@ -334,6 +339,7 @@ class AccuracyEvaluator:
             audio_file=audio_path,
             window_seconds=self.window_seconds,
             poll_interval=self.poll_interval,
+            separator=self.separator,
         ).run()
 
         return self._build_result(

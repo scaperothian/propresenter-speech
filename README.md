@@ -47,6 +47,9 @@ poetry install
 # For wav2vec2 / wav2vec2-alt / MERT backends (requires PyTorch 2.7.0+)
 poetry install --extras torch
 
+# For Demucs source separation (vocal isolation before ASR)
+poetry install --extras separation
+
 # Verify the CLI is available
 poetry run propresenter-speech --help
 ```
@@ -140,6 +143,17 @@ ASR backend:
   --wav2vec-ckpt-dir PATH
                         (wav2vec2-alt) path to SpeechBrain CKPT+... directory
 
+Source separation:
+  --source-separation {auto,on,off}
+                        auto: Demucs vocal isolation on in follow-semantic-words mode,
+                              off otherwise (default)
+                        on:   always isolate vocals before ASR (requires --extras separation)
+                        off:  never isolate
+  --separation-model {htdemucs,htdemucs_ft}
+                        Demucs model (default: htdemucs; htdemucs_ft: higher quality, ~4x slower)
+  --separation-device {auto,cpu,mps,cuda}
+                        Torch device for Demucs inference (default: auto)
+
 Audio pipeline:
   --device DEVICE       Input device index; see --list-devices (default: system default)
   --window-seconds SECS Rolling audio window length (default: 2.0)
@@ -179,6 +193,10 @@ poetry run propresenter-speech --mode follow-semantic-words --embedding-mode wor
 # MERT audio embedding mode (requires ground-truth JSON and torch extra)
 poetry run propresenter-speech --mode follow-semantic-audio \
   --ground-truth ../propresenter-train/output/"How Great Thou Art.json"
+
+# Source separation: auto-on in follow-semantic-words; disable it, or force it in another mode
+poetry run propresenter-speech --mode follow-semantic-words --source-separation off
+poetry run propresenter-speech --mode presentation --source-separation on
 
 # Use a more accurate Whisper model
 poetry run propresenter-speech --model small

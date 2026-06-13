@@ -7,6 +7,9 @@ Audio file
 FilePipeline       (synchronous — no threading)
     │  audio chunk
     ▼
+SourceSeparator.separate(chunk)   (optional — e.g. Demucs vocal isolation)
+    │  isolated-vocals chunk
+    ▼
 Predictor.predict(chunk) → result
     │
     ▼
@@ -36,6 +39,7 @@ from .audio_pipeline import (
 if TYPE_CHECKING:
     from .handlers.base import ModeHandler
     from .predictors import Predictor
+    from .separation import SourceSeparator
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +56,9 @@ class FilePipeline(_BasePipeline):
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         playback: bool = False,
         output_device: Optional[int] = None,
+        separator: "SourceSeparator | None" = None,
     ):
-        super().__init__(predictor, handler, window_seconds, poll_interval)
+        super().__init__(predictor, handler, window_seconds, poll_interval, separator=separator)
         self.audio_file = audio_file
         self.playback = playback
         self.output_device = output_device

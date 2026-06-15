@@ -32,6 +32,19 @@ Four modes of operation:
 > **`follow-semantic-audio` note:** The MERT model (`m-a-p/MERT-v1-95M`, ~380 MB) requires the
 > torch extra: `poetry install --extras torch`.  A propresenter-train ground-truth JSON file is
 > also required to build slide prototypes at startup.
+>
+> **Defaults (Apple Silicon):** `--asr-backend auto` runs Whisper **`tiny` on the Apple GPU**
+> (mlx-whisper) when the `whisper-mlx` extra is installed, falling back to CPU `faster-whisper`
+> otherwise; and `--source-separation auto` runs **vocal isolation on the GPU in every transcription
+> mode** (demucs-mlx) when a separation extra is installed, skipping it otherwise.  So a vanilla
+> `poetry install` runs CPU Whisper with no separation; installing `whisper-mlx` + `separation-mlx`
+> flips both to the GPU automatically.  Override with `--asr-backend whisper` / `--source-separation off`.
+>
+> CTranslate2 (faster-whisper) has no Metal backend, so it's CPU-only on Mac; mlx-whisper is
+> ~3–4× faster and the only way to run `small`/`medium` in real time (e.g. `medium` is RTF ~1.9 on
+> CPU vs ~0.4 on the GPU).  demucs-mlx likewise runs Demucs on the GPU (~3× the torch `separation`
+> extra, which is CPU-only — htdemucs can't run on MPS).  Note separation roughly doubles per-window
+> latency, so it trades response speed for noise robustness; turn it off if commands feel sluggish.
 
 ---
 
@@ -46,6 +59,15 @@ poetry install
 
 # For wav2vec2 / wav2vec2-alt / MERT backends (requires PyTorch 2.7.0+)
 poetry install --extras torch
+
+# For Whisper on the Apple GPU (mlx-whisper — ~3-4x faster; runs small/medium in real time)
+poetry install --extras whisper-mlx
+
+# For Demucs source separation (vocal isolation before ASR — torch, CPU-only on Mac)
+poetry install --extras separation
+
+# For demucs-mlx source separation (Apple GPU — much better real-time factor on Apple Silicon)
+poetry install --extras separation-mlx
 
 # Verify the CLI is available
 poetry run propresenter-speech --help
@@ -131,14 +153,31 @@ Operation mode:
                         used to build per-slide MERT prototype embeddings at startup
 
 ASR backend:
-  --asr-backend {whisper,wav2vec2,wav2vec2-alt}
-                        whisper:      faster-whisper CTranslate2 (default)
+  --asr-backend {auto,whisper,whisper-mlx,wav2vec2,wav2vec2-alt}
+                        auto:         mlx-whisper (Apple GPU) if installed, else faster-whisper CPU (default)
+                        whisper:      faster-whisper CTranslate2, CPU on Mac
+                        whisper-mlx:  mlx-whisper on the Apple GPU, ~3-4x faster (requires --extras whisper-mlx)
                         wav2vec2:     HuggingFace Wav2Vec2ForCTC (requires --extras torch)
                         wav2vec2-alt: SpeechBrain ALT lyric-tuned checkpoint (requires --extras torch)
   --model {tiny,base,small,medium,large}
-                        (whisper) Whisper model size (default: base)
+                        (whisper / whisper-mlx) Whisper model size (default: tiny)
   --wav2vec-ckpt-dir PATH
                         (wav2vec2-alt) path to SpeechBrain CKPT+... directory
+
+Source separation:
+  --source-separation {auto,on,off}
+                        auto: vocal isolation on in all transcription modes (off in
+                              follow-semantic-audio); skipped if no backend installed (default)
+                        on:   always isolate vocals before ASR (requires a separation extra)
+                        off:  never isolate
+  --separation-backend {auto,demucs,demucs-mlx}
+                        auto:       demucs-mlx (Apple GPU) if installed, else torch demucs (default)
+                        demucs:     torch Demucs (--extras separation)
+                        demucs-mlx: MLX Demucs on the Apple GPU (--extras separation-mlx)
+  --separation-model {htdemucs,htdemucs_ft}
+                        Demucs model (default: htdemucs; htdemucs_ft: higher quality, ~4x slower)
+  --separation-device {auto,cpu,mps,cuda}
+                        Torch device for the demucs backend; ignored by demucs-mlx (default: auto)
 
 Audio pipeline:
   --device DEVICE       Input device index; see --list-devices (default: system default)
@@ -180,6 +219,13 @@ poetry run propresenter-speech --mode follow-semantic-words --embedding-mode wor
 poetry run propresenter-speech --mode follow-semantic-audio \
   --ground-truth ../propresenter-train/output/"How Great Thou Art.json"
 
+# Source separation: auto-on in follow-semantic-words; disable it, or force it in another mode
+poetry run propresenter-speech --mode follow-semantic-words --source-separation off
+poetry run propresenter-speech --mode presentation --source-separation on
+
+# Separation backend: auto picks the Apple-GPU demucs-mlx when installed (best RTF), else torch
+poetry run propresenter-speech --mode follow-semantic-words --separation-backend demucs-mlx
+
 # Use a more accurate Whisper model
 poetry run propresenter-speech --model small
 
@@ -212,9 +258,13 @@ Microphone
 AudioPipeline          (sounddevice ring buffer, poll every --poll-interval s)
     │  audio chunk
     ▼
+SourceSeparator.separate()   (optional, --source-separation; vocal isolation)
+    │                         DemucsSeparator (torch) or MLXDemucsSeparator (Apple GPU)
+    ▼
 Predictor.predict()
     │
     ├── WhisperPredictor     → TranscriptionResult(text, word_buffer)
+    │     (Transcriber = faster-whisper/CPU, or MLXTranscriber = mlx-whisper/Apple GPU)
     ├── Wav2VecPredictor     → TranscriptionResult(text, word_buffer)
     ├── Wav2VecAltPredictor  → TranscriptionResult(text, word_buffer)
     └── MERTPredictor        → AudioEmbeddingResult(embedding)

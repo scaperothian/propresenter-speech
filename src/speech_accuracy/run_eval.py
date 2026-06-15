@@ -86,20 +86,40 @@ def read_summary(log_path: Path) -> dict | None:
 
 # ─── Step runners ────────────────────────────────────────────────────────────
 
-def run_whisper(gt_json: Path, tag: str, model: str, embedding_mode: str = "slide") -> Path:
-    mode_suffix = "_ww" if embedding_mode == "word-window" else ""
-    log_path = RESULTS_DIR / f"whisper_{model}{mode_suffix}_{tag}.log"
-    png_path = RESULTS_DIR / f"whisper_{model}{mode_suffix}_{tag}.png"
+def _whisper_suffix(embedding_mode: str, separation: str) -> str:
+    suffix = "_ww" if embedding_mode == "word-window" else ""
+    if separation == "on":
+        suffix += "_sep"
+    return suffix
+
+
+def run_whisper(
+    gt_json: Path,
+    tag: str,
+    model: str,
+    embedding_mode: str = "slide",
+    separation: str = "off",
+    separation_model: str = "htdemucs",
+    asr_backend: str = "whisper",
+) -> Path:
+    suffix = _whisper_suffix(embedding_mode, separation)
+    bsuffix = "_mlx" if asr_backend == "whisper-mlx" else ""
+    log_path = RESULTS_DIR / f"whisper_{model}{bsuffix}{suffix}_{tag}.log"
+    png_path = RESULTS_DIR / f"whisper_{model}{bsuffix}{suffix}_{tag}.png"
     cmd = [SPEECH_ACCURACY,
            "--ground-truth", str(gt_json),
            "--model", model,
+           "--asr-backend", asr_backend,
            "--log-file", str(log_path)]
     if embedding_mode != "slide":
         cmd += ["--embedding-mode", embedding_mode]
+    if separation == "on":
+        cmd += ["--source-separation", "on", "--separation-model", separation_model]
     run(
         cmd,
         cwd=REPO_ROOT,
-        label=f"Whisper {model} ({embedding_mode}) — {tag}",
+        label=f"Whisper {model}{' mlx' if bsuffix else ''} "
+              f"({embedding_mode}{', sep' if separation == 'on' else ''}) — {tag}",
     )
     if log_path.is_file():
         run(
@@ -177,6 +197,8 @@ def print_summary(
     skip_mert: bool,
     skip_wav2vec: bool,
     embedding_mode: str = "slide",
+    separation: str = "off",
+    asr_backend: str = "whisper",
 ) -> None:
     sep  = "=" * 70
     thin = "─" * 70
@@ -193,8 +215,11 @@ def print_summary(
     entries: list[tuple[str, str, Path]] = []
     for model in whisper_models:
         for tag in tags:
-            mode_suffix = "_ww" if embedding_mode == "word-window" else ""
-            entries.append((f"Whisper {model} ({embedding_mode})", tag, RESULTS_DIR / f"whisper_{model}{mode_suffix}_{tag}.log"))
+            suffix = _whisper_suffix(embedding_mode, separation)
+            bsuffix = "_mlx" if asr_backend == "whisper-mlx" else ""
+            label = (f"Whisper {model}{' mlx' if bsuffix else ''} "
+                     f"({embedding_mode}{', sep' if separation == 'on' else ''})")
+            entries.append((label, tag, RESULTS_DIR / f"whisper_{model}{bsuffix}{suffix}_{tag}.log"))
     if not skip_mert:
         for tag in tags:
             entries.append(("MERT-v1-95M", tag, RESULTS_DIR / f"mert_{tag}.log"))
@@ -245,6 +270,18 @@ def main() -> None:
         "--embedding-mode", default="slide", choices=["slide", "word-window"],
         help="Slide embedding mode for Whisper evaluation (default: slide)",
     )
+    parser.add_argument(
+        "--asr-backend", default="whisper", choices=["whisper", "whisper-mlx"],
+        help="Whisper backend: faster-whisper CPU (default) or mlx-whisper on the Apple GPU",
+    )
+    parser.add_argument(
+        "--source-separation", default="off", choices=["on", "off"],
+        help="Isolate vocals with Demucs before Whisper transcription",
+    )
+    parser.add_argument(
+        "--separation-model", default="htdemucs", choices=["htdemucs", "htdemucs_ft"],
+        help="Demucs model for --source-separation on",
+    )
     parser.add_argument("--skip-whisper", action="store_true",
                         help="Skip all Whisper evaluation")
     parser.add_argument("--skip-mert", action="store_true",
@@ -275,7 +312,12 @@ def main() -> None:
     for gt_json, tag in zip(args.ground_truth, tags):
         if not args.skip_whisper:
             for model in args.whisper_models:
-                run_whisper(gt_json, tag, model, args.embedding_mode)
+                run_whisper(
+                    gt_json, tag, model, args.embedding_mode,
+                    separation=args.source_separation,
+                    separation_model=args.separation_model,
+                    asr_backend=args.asr_backend,
+                )
         if args.pairwise:
             run_whisper_pairwise(gt_json, tag)
         if not args.skip_mert:
@@ -284,7 +326,10 @@ def main() -> None:
             run_wav2vec(gt_json, tag)
 
     whisper_models = [] if args.skip_whisper else args.whisper_models
-    print_summary(tags, whisper_models, args.skip_mert, args.skip_wav2vec, args.embedding_mode)
+    print_summary(
+        tags, whisper_models, args.skip_mert, args.skip_wav2vec,
+        args.embedding_mode, args.source_separation, args.asr_backend,
+    )
 
 
 if __name__ == "__main__":

@@ -26,8 +26,13 @@ from .evaluator import (
 )
 from propresenter_speech.audio_pipeline import DEFAULT_POLL_INTERVAL, DEFAULT_WINDOW_SECONDS
 from propresenter_speech.handlers.follow_semantic_words import DEFAULT_MIN_MARGIN, DEFAULT_SIMILARITY_THRESHOLD
+from propresenter_speech.separation import (
+    DEFAULT_DEMUCS_MODEL,
+    SourceSeparator,
+    build_separator,
+)
 from propresenter_speech.slide_embedder import SlideEmbedder, WordWindowEmbedder
-from propresenter_speech.transcriber import Transcriber
+from propresenter_speech.transcriber import SpeechTranscriber, Transcriber
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +74,17 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         default="base",
         choices=["tiny", "base", "small", "medium", "large"],
         help="Whisper model size",
+    )
+    parser.add_argument(
+        "--asr-backend",
+        default="whisper",
+        choices=["whisper", "whisper-mlx"],
+        dest="asr_backend",
+        help=(
+            "whisper:     faster-whisper CTranslate2, CPU on Mac (default)\n"
+            "whisper-mlx: mlx-whisper on the Apple GPU (requires --extras whisper-mlx); "
+            "lets small/medium run in real time"
+        ),
     )
     parser.add_argument(
         "--window-seconds",
@@ -142,6 +158,40 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         metavar="N",
         help="(word-window mode) words to advance between successive windows (default: 1)",
     )
+    parser.add_argument(
+        "--source-separation",
+        default="off",
+        choices=["on", "off"],
+        dest="source_separation",
+        help=(
+            "on: isolate vocals with Demucs before transcription\n"
+            "(default off so results stay comparable with existing baselines)"
+        ),
+    )
+    parser.add_argument(
+        "--separation-backend",
+        default="auto",
+        choices=["auto", "demucs", "demucs-mlx"],
+        dest="separation_backend",
+        help=(
+            "auto: demucs-mlx (Apple GPU) if installed, else torch demucs\n"
+            "demucs: torch Demucs; demucs-mlx: MLX Demucs on Apple Silicon"
+        ),
+    )
+    parser.add_argument(
+        "--separation-model",
+        default=DEFAULT_DEMUCS_MODEL,
+        choices=["htdemucs", "htdemucs_ft"],
+        dest="separation_model",
+        help="Demucs model (htdemucs_ft: higher quality, ~4x slower)",
+    )
+    parser.add_argument(
+        "--separation-device",
+        default="auto",
+        choices=["auto", "cpu", "mps", "cuda"],
+        dest="separation_device",
+        help="Torch device for the demucs backend (ignored by demucs-mlx)",
+    )
     parser.add_argument("--verbose", action="store_true", help="Print every inference step to stdout")
     parser.add_argument(
         "--log-level",
@@ -155,7 +205,37 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
 # Single-file evaluation
 # ---------------------------------------------------------------------------
 
-def _build_evaluator(ground_truth, args) -> tuple[AccuracyEvaluator, Transcriber, int]:
+def _build_separator(args) -> SourceSeparator | None:
+    if args.source_separation != "on":
+        return None
+    return build_separator(
+        backend=args.separation_backend,
+        model_name=args.separation_model,
+        device=args.separation_device,
+        verbose=args.verbose,
+    )
+
+
+def _separation_tag(args, separator: SourceSeparator | None) -> str:
+    if separator is None:
+        return "off"
+    suffix = "-mlx" if getattr(separator, "device", None) == "mlx" else ""
+    return f"{args.separation_model}{suffix}"
+
+
+def _build_transcriber(args) -> SpeechTranscriber:
+    if args.asr_backend == "whisper-mlx":
+        from propresenter_speech.transcriber_mlx import MLXTranscriber
+        print(f"Loading Whisper '{args.model}' (mlx, Apple GPU)…")
+        transcriber = MLXTranscriber(model_name=args.model)
+    else:
+        print(f"Loading Whisper '{args.model}' (faster-whisper, CPU)…")
+        transcriber = Transcriber(model_name=args.model)
+    transcriber.load()
+    return transcriber
+
+
+def _build_evaluator(ground_truth, args) -> tuple[AccuracyEvaluator, SpeechTranscriber, int]:
     slide_texts = [s.text for s in ground_truth]
 
     context_words = args.context_words
@@ -179,8 +259,7 @@ def _build_evaluator(ground_truth, args) -> tuple[AccuracyEvaluator, Transcriber
         embedder.load()
         embedder.build(slide_texts, slide_indices=[s.idx for s in ground_truth])
 
-    transcriber = Transcriber(model_name=args.model)
-    transcriber.load()
+    transcriber = _build_transcriber(args)
 
     evaluator = AccuracyEvaluator(
         transcriber=transcriber,
@@ -192,6 +271,7 @@ def _build_evaluator(ground_truth, args) -> tuple[AccuracyEvaluator, Transcriber
         similarity_threshold=args.similarity_threshold,
         min_margin=args.min_margin,
         verbose=args.verbose,
+        separator=_build_separator(args),
     )
     return evaluator, transcriber, context_words
 
@@ -209,6 +289,8 @@ def _write_result_jsonl(
     embedding_mode: str = "",
     similarity_threshold: float = 0.4,
     min_margin: float = 0.15,
+    source_separation: str = "off",
+    asr_backend: str = "whisper",
 ) -> None:
     """Append all inference events + a summary record to the JSONL log."""
     with open(log_path, "a", encoding="utf-8") as f:
@@ -220,6 +302,8 @@ def _write_result_jsonl(
             "audio_file": result.audio_path,
             "ground_truth_file": gt_path,
             "embedding_mode": embedding_mode,
+            "source_separation": source_separation,
+            "asr_backend": asr_backend,
             "model": result.model_name,
             "window_seconds": result.window_seconds,
             "poll_interval": result.poll_interval,
@@ -295,6 +379,8 @@ def speech_accuracy_main() -> None:
         embedding_mode=args.embedding_mode,
         similarity_threshold=args.similarity_threshold,
         min_margin=args.min_margin,
+        source_separation=_separation_tag(args, evaluator.separator),
+        asr_backend=args.asr_backend,
     )
     print_summary(result)
     print(f"Full event log: {log_path}")
@@ -336,10 +422,10 @@ def evaluate_all_main() -> None:
     print(f"Found {len(json_files)} ground-truth file(s) in {gt_dir}\n")
 
     # Load Whisper once and reuse across all presentations
-    print("Loading Whisper model…")
-    transcriber = Transcriber(model_name=args.model)
-    transcriber.load()
+    transcriber = _build_transcriber(args)
     print("Whisper ready.\n")
+
+    separator = _build_separator(args)
 
     results: list[EvaluationResult] = []
 
@@ -375,6 +461,7 @@ def evaluate_all_main() -> None:
             similarity_threshold=args.similarity_threshold,
             min_margin=args.min_margin,
             verbose=args.verbose,
+            separator=separator,
         )
 
         log_path = args.log_file or _default_log_path(name)
@@ -387,6 +474,8 @@ def evaluate_all_main() -> None:
             embedding_mode=args.embedding_mode,
             similarity_threshold=args.similarity_threshold,
             min_margin=args.min_margin,
+            source_separation=_separation_tag(args, separator),
+            asr_backend=args.asr_backend,
         )
         print_summary(result)
         results.append(result)

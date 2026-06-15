@@ -23,9 +23,16 @@ matplotlib = "*"
 propresenter-client = {path = "../propresenter-client", develop = true}
 torch = {version = "2.7.0", optional = true}
 transformers = {version = ">=4.30", optional = true}
+demucs = {version = "^4.0.1", optional = true}
+torchaudio = {version = "2.7.0", optional = true}
+demucs-mlx = {version = "^1.4.3", optional = true, markers = "platform_system == 'Darwin'"}
+mlx-whisper = {version = "^0.4.3", optional = true, markers = "platform_system == 'Darwin'"}
 
 [tool.poetry.extras]
 torch = ["torch", "transformers"]
+separation = ["demucs", "torchaudio", "torch"]
+separation-mlx = ["demucs-mlx"]
+whisper-mlx = ["mlx-whisper"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0"

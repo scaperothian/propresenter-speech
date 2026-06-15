@@ -14,13 +14,23 @@ Available model sizes (speed vs. accuracy tradeoff on CPU):
 """
 
 import logging
-from typing import Optional
+from typing import Optional, Protocol
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
 WHISPER_SAMPLE_RATE = 16_000  # Hz — Whisper always expects 16 kHz mono audio
+
+
+class SpeechTranscriber(Protocol):
+    """Structural type shared by ``Transcriber`` (CPU) and ``MLXTranscriber`` (GPU)."""
+
+    def load(self) -> None: ...
+
+    def transcribe(
+        self, audio: np.ndarray, sample_rate: int = ..., language: Optional[str] = ...
+    ) -> str: ...
 
 
 class Transcriber:

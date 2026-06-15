@@ -100,13 +100,16 @@ def run_whisper(
     embedding_mode: str = "slide",
     separation: str = "off",
     separation_model: str = "htdemucs",
+    asr_backend: str = "whisper",
 ) -> Path:
     suffix = _whisper_suffix(embedding_mode, separation)
-    log_path = RESULTS_DIR / f"whisper_{model}{suffix}_{tag}.log"
-    png_path = RESULTS_DIR / f"whisper_{model}{suffix}_{tag}.png"
+    bsuffix = "_mlx" if asr_backend == "whisper-mlx" else ""
+    log_path = RESULTS_DIR / f"whisper_{model}{bsuffix}{suffix}_{tag}.log"
+    png_path = RESULTS_DIR / f"whisper_{model}{bsuffix}{suffix}_{tag}.png"
     cmd = [SPEECH_ACCURACY,
            "--ground-truth", str(gt_json),
            "--model", model,
+           "--asr-backend", asr_backend,
            "--log-file", str(log_path)]
     if embedding_mode != "slide":
         cmd += ["--embedding-mode", embedding_mode]
@@ -115,7 +118,8 @@ def run_whisper(
     run(
         cmd,
         cwd=REPO_ROOT,
-        label=f"Whisper {model} ({embedding_mode}{', sep' if separation == 'on' else ''}) — {tag}",
+        label=f"Whisper {model}{' mlx' if bsuffix else ''} "
+              f"({embedding_mode}{', sep' if separation == 'on' else ''}) — {tag}",
     )
     if log_path.is_file():
         run(
@@ -194,6 +198,7 @@ def print_summary(
     skip_wav2vec: bool,
     embedding_mode: str = "slide",
     separation: str = "off",
+    asr_backend: str = "whisper",
 ) -> None:
     sep  = "=" * 70
     thin = "─" * 70
@@ -211,8 +216,10 @@ def print_summary(
     for model in whisper_models:
         for tag in tags:
             suffix = _whisper_suffix(embedding_mode, separation)
-            label = f"Whisper {model} ({embedding_mode}{', sep' if separation == 'on' else ''})"
-            entries.append((label, tag, RESULTS_DIR / f"whisper_{model}{suffix}_{tag}.log"))
+            bsuffix = "_mlx" if asr_backend == "whisper-mlx" else ""
+            label = (f"Whisper {model}{' mlx' if bsuffix else ''} "
+                     f"({embedding_mode}{', sep' if separation == 'on' else ''})")
+            entries.append((label, tag, RESULTS_DIR / f"whisper_{model}{bsuffix}{suffix}_{tag}.log"))
     if not skip_mert:
         for tag in tags:
             entries.append(("MERT-v1-95M", tag, RESULTS_DIR / f"mert_{tag}.log"))
@@ -264,6 +271,10 @@ def main() -> None:
         help="Slide embedding mode for Whisper evaluation (default: slide)",
     )
     parser.add_argument(
+        "--asr-backend", default="whisper", choices=["whisper", "whisper-mlx"],
+        help="Whisper backend: faster-whisper CPU (default) or mlx-whisper on the Apple GPU",
+    )
+    parser.add_argument(
         "--source-separation", default="off", choices=["on", "off"],
         help="Isolate vocals with Demucs before Whisper transcription",
     )
@@ -305,6 +316,7 @@ def main() -> None:
                     gt_json, tag, model, args.embedding_mode,
                     separation=args.source_separation,
                     separation_model=args.separation_model,
+                    asr_backend=args.asr_backend,
                 )
         if args.pairwise:
             run_whisper_pairwise(gt_json, tag)
@@ -316,7 +328,7 @@ def main() -> None:
     whisper_models = [] if args.skip_whisper else args.whisper_models
     print_summary(
         tags, whisper_models, args.skip_mert, args.skip_wav2vec,
-        args.embedding_mode, args.source_separation,
+        args.embedding_mode, args.source_separation, args.asr_backend,
     )
 
 

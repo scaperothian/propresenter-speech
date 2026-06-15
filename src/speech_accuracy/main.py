@@ -32,7 +32,7 @@ from propresenter_speech.separation import (
     build_separator,
 )
 from propresenter_speech.slide_embedder import SlideEmbedder, WordWindowEmbedder
-from propresenter_speech.transcriber import Transcriber
+from propresenter_speech.transcriber import SpeechTranscriber, Transcriber
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +74,17 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         default="base",
         choices=["tiny", "base", "small", "medium", "large"],
         help="Whisper model size",
+    )
+    parser.add_argument(
+        "--asr-backend",
+        default="whisper",
+        choices=["whisper", "whisper-mlx"],
+        dest="asr_backend",
+        help=(
+            "whisper:     faster-whisper CTranslate2, CPU on Mac (default)\n"
+            "whisper-mlx: mlx-whisper on the Apple GPU (requires --extras whisper-mlx); "
+            "lets small/medium run in real time"
+        ),
     )
     parser.add_argument(
         "--window-seconds",
@@ -212,7 +223,19 @@ def _separation_tag(args, separator: SourceSeparator | None) -> str:
     return f"{args.separation_model}{suffix}"
 
 
-def _build_evaluator(ground_truth, args) -> tuple[AccuracyEvaluator, Transcriber, int]:
+def _build_transcriber(args) -> SpeechTranscriber:
+    if args.asr_backend == "whisper-mlx":
+        from propresenter_speech.transcriber_mlx import MLXTranscriber
+        print(f"Loading Whisper '{args.model}' (mlx, Apple GPU)…")
+        transcriber = MLXTranscriber(model_name=args.model)
+    else:
+        print(f"Loading Whisper '{args.model}' (faster-whisper, CPU)…")
+        transcriber = Transcriber(model_name=args.model)
+    transcriber.load()
+    return transcriber
+
+
+def _build_evaluator(ground_truth, args) -> tuple[AccuracyEvaluator, SpeechTranscriber, int]:
     slide_texts = [s.text for s in ground_truth]
 
     context_words = args.context_words
@@ -236,8 +259,7 @@ def _build_evaluator(ground_truth, args) -> tuple[AccuracyEvaluator, Transcriber
         embedder.load()
         embedder.build(slide_texts, slide_indices=[s.idx for s in ground_truth])
 
-    transcriber = Transcriber(model_name=args.model)
-    transcriber.load()
+    transcriber = _build_transcriber(args)
 
     evaluator = AccuracyEvaluator(
         transcriber=transcriber,
@@ -268,6 +290,7 @@ def _write_result_jsonl(
     similarity_threshold: float = 0.4,
     min_margin: float = 0.15,
     source_separation: str = "off",
+    asr_backend: str = "whisper",
 ) -> None:
     """Append all inference events + a summary record to the JSONL log."""
     with open(log_path, "a", encoding="utf-8") as f:
@@ -280,6 +303,7 @@ def _write_result_jsonl(
             "ground_truth_file": gt_path,
             "embedding_mode": embedding_mode,
             "source_separation": source_separation,
+            "asr_backend": asr_backend,
             "model": result.model_name,
             "window_seconds": result.window_seconds,
             "poll_interval": result.poll_interval,
@@ -356,6 +380,7 @@ def speech_accuracy_main() -> None:
         similarity_threshold=args.similarity_threshold,
         min_margin=args.min_margin,
         source_separation=_separation_tag(args, evaluator.separator),
+        asr_backend=args.asr_backend,
     )
     print_summary(result)
     print(f"Full event log: {log_path}")
@@ -397,9 +422,7 @@ def evaluate_all_main() -> None:
     print(f"Found {len(json_files)} ground-truth file(s) in {gt_dir}\n")
 
     # Load Whisper once and reuse across all presentations
-    print("Loading Whisper model…")
-    transcriber = Transcriber(model_name=args.model)
-    transcriber.load()
+    transcriber = _build_transcriber(args)
     print("Whisper ready.\n")
 
     separator = _build_separator(args)
@@ -452,6 +475,7 @@ def evaluate_all_main() -> None:
             similarity_threshold=args.similarity_threshold,
             min_margin=args.min_margin,
             source_separation=_separation_tag(args, separator),
+            asr_backend=args.asr_backend,
         )
         print_summary(result)
         results.append(result)

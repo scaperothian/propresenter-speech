@@ -52,7 +52,7 @@ from propresenter_speech.audio_pipeline import DEFAULT_WINDOW_SECONDS, DEFAULT_P
 from propresenter_speech.file_pipeline import FilePipeline
 from propresenter_speech.predictors import TranscriptionResult, WhisperPredictor
 from propresenter_speech.slide_embedder import SlideEmbedder, WordWindowEmbedder
-from propresenter_speech.transcriber import Transcriber
+from propresenter_speech.transcriber import SpeechTranscriber, Transcriber  # noqa: F401
 
 if TYPE_CHECKING:
     from propresenter_speech.separation import SourceSeparator
@@ -294,7 +294,7 @@ class AccuracyEvaluator:
 
     def __init__(
         self,
-        transcriber: Transcriber,
+        transcriber: SpeechTranscriber,
         embedder: SlideEmbedder | WordWindowEmbedder,
         ground_truth: list[GroundTruthSlide],
         context_words: int,

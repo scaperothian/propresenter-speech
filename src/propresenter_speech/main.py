@@ -12,6 +12,7 @@ Usage examples:
 """
 
 import argparse
+import importlib.util
 import logging
 import sys
 
@@ -154,18 +155,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     asr_grp = parser.add_argument_group("ASR backend")
     asr_grp.add_argument(
         "--asr-backend",
-        default="whisper",
-        choices=["whisper", "wav2vec2", "wav2vec2-alt"],
+        default="auto",
+        choices=["auto", "whisper", "whisper-mlx", "wav2vec2", "wav2vec2-alt"],
         dest="asr_backend",
         help=(
-            "whisper:      faster-whisper CTranslate2 (default)\n"
+            "auto:         mlx-whisper on the Apple GPU if installed, else faster-whisper CPU (default)\n"
+            "whisper:      faster-whisper CTranslate2, CPU on Mac\n"
+            "whisper-mlx:  mlx-whisper on the Apple GPU, ~3-4x faster (requires --extras whisper-mlx)\n"
             "wav2vec2:     HuggingFace Wav2Vec2ForCTC (requires --extras torch)\n"
             "wav2vec2-alt: SpeechBrain ALT lyric-tuned checkpoint (requires --extras torch)"
         ),
     )
     asr_grp.add_argument(
         "--model",
-        default="base",
+        default="tiny",
         choices=["tiny", "base", "small", "medium", "large"],
         help="(whisper) Whisper model size (smaller = faster, larger = more accurate)",
     )
@@ -197,8 +200,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=["auto", "on", "off"],
         dest="source_separation",
         help=(
-            "auto: vocal isolation on in follow-semantic-words mode, off otherwise\n"
-            "on:   always isolate vocals before ASR (requires --extras separation)\n"
+            "auto: isolate vocals in all transcription modes (off in follow-semantic-audio);\n"
+            "      silently skipped if no separation backend is installed (default)\n"
+            "on:   always isolate vocals before ASR (requires a separation extra)\n"
             "off:  never isolate"
         ),
     )
@@ -346,6 +350,8 @@ def _build_follow_semantic_words_handler(pro: ProPresenterController, args) -> F
 
 def _build_predictor(args):
     backend = args.asr_backend
+    if backend == "auto":
+        backend = "whisper-mlx" if importlib.util.find_spec("mlx_whisper") else "whisper"
     if backend == "wav2vec2":
         print("Loading Wav2Vec2 model — this may take a moment on first run…")
         predictor = Wav2VecPredictor(verbose=args.verbose)
@@ -360,7 +366,20 @@ def _build_predictor(args):
         predictor.load()
         print("Wav2Vec2-ALT ready.")
         return predictor
-    # default: whisper
+    if backend == "whisper-mlx":
+        from .transcriber_mlx import MLXTranscriber
+        print("Loading Whisper (mlx, Apple GPU) — this may take a moment on first run…")
+        transcriber = MLXTranscriber(model_name=args.model)
+        try:
+            transcriber.load()
+        except Exception as exc:
+            if args.asr_backend != "auto":
+                raise
+            print(f"  mlx-whisper unavailable ({exc}); falling back to faster-whisper (CPU).")
+        else:
+            print("Whisper (mlx) ready.")
+            return WhisperPredictor(transcriber, verbose=args.verbose)
+    # default: whisper (CPU)
     print("Loading Whisper model — this may take a moment on first run…")
     transcriber = Transcriber(model_name=args.model)
     transcriber.load()
@@ -370,17 +389,22 @@ def _build_predictor(args):
 
 def _build_separator(args, mode: Mode) -> SourceSeparator | None:
     enabled = args.source_separation == "on" or (
-        args.source_separation == "auto" and mode == Mode.FOLLOW_SEMANTIC_WORDS
+        args.source_separation == "auto" and mode != Mode.FOLLOW_SEMANTIC_AUDIO
     )
     if not enabled:
         return None
-    separator = build_separator(
-        backend=args.separation_backend,
-        model_name=args.separation_model,
-        device=args.separation_device,
-        verbose=args.verbose,
-    )
-    return separator
+    try:
+        return build_separator(
+            backend=args.separation_backend,
+            model_name=args.separation_model,
+            device=args.separation_device,
+            verbose=args.verbose,
+        )
+    except ImportError as exc:
+        if args.source_separation != "auto":
+            raise
+        print(f"  source separation unavailable ({exc}); continuing without it.")
+        return None
 
 
 def main() -> None:

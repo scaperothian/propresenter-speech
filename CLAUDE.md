@@ -11,9 +11,10 @@ HTTP API to advance, retreat, or jump to a specific slide.
 
 | Concern | Module | Notes |
 |---------|--------|-------|
-| Whisper transcription | `src/propresenter_speech/transcriber.py` | lazy-loads via faster-whisper; no PyTorch; models from HuggingFace |
+| Whisper transcription | `src/propresenter_speech/transcriber.py` | `Transcriber` — lazy-loads via faster-whisper (CTranslate2, CPU-only on Mac); no PyTorch; models from HuggingFace; `SpeechTranscriber` Protocol shared with the MLX variant |
+| Whisper-MLX transcription | `src/propresenter_speech/transcriber_mlx.py` | `MLXTranscriber` — drop-in `Transcriber` replacement running mlx-whisper on the Apple GPU (fp16); ~3–4x faster, the only way to run small/medium in real time on Apple Silicon; `--model` maps to `mlx-community/whisper-*-mlx`; requires whisper-mlx extra |
 | Predictor protocol | `src/propresenter_speech/predictors/base.py` | `Predictor` Protocol — `predict(audio) -> Any`; `TranscriptionResult(text, word_buffer)`; `AudioEmbeddingResult(embedding)` |
-| Whisper predictor | `src/propresenter_speech/predictors/whisper.py` | `WhisperPredictor` — wraps `Transcriber`, owns the 200-word rolling `_word_buffer`, returns `TranscriptionResult`; always returns a result (even for empty transcriptions) |
+| Whisper predictor | `src/propresenter_speech/predictors/whisper.py` | `WhisperPredictor` — wraps any `SpeechTranscriber` (`Transcriber` CPU or `MLXTranscriber` GPU), owns the 200-word rolling `_word_buffer`, returns `TranscriptionResult`; always returns a result (even for empty transcriptions) |
 | Wav2Vec2 predictor | `src/propresenter_speech/predictors/wav2vec.py` | `Wav2VecPredictor` — HuggingFace `Wav2Vec2ForCTC`; requires torch extra |
 | Wav2Vec2-ALT predictor | `src/propresenter_speech/predictors/wav2vec_alt.py` | `Wav2VecAltPredictor` — SpeechBrain lyric-tuned checkpoint loaded without SpeechBrain at inference; requires torch extra |
 | MERT predictor | `src/propresenter_speech/predictors/mert.py` | `MERTPredictor` — `m-a-p/MERT-v1-95M`; resamples 16 kHz → 24 kHz internally; returns `AudioEmbeddingResult`; `embed_24k()` is used by `FollowSemanticAudioHandler` for prototype building; requires torch extra |
@@ -32,14 +33,15 @@ HTTP API to advance, retreat, or jump to a specific slide.
 | Follow-semantic-audio mode | `src/propresenter_speech/handlers/follow_semantic_audio.py` | `FollowSemanticAudioHandler` — builds per-slide MERT prototype embeddings from `--ground-truth` reference audio at startup; matches live audio via mean-centered cosine similarity; does not parse explicit commands |
 | Follow-mode slide tracking | `src/propresenter_speech/slide_follower.py` | fetches slide text, extracts trigger phrase via `--trigger-index` / `--trigger-words`; `refresh_after_advance()` and `refresh_to_slide()` avoid race with API propagation delay |
 | Semantic slide index | `src/propresenter_speech/slide_embedder.py` | `SlideEmbedder` — one embedding per slide; `WordWindowEmbedder` — one embedding per word position (configurable stride), slides passed as `(slide_idx, text)` pairs in chronological order so repeated sections resolve correctly; both expose `find_slide_with_margin()` and `avg_words_per_slide` |
-| CLI entry point | `src/propresenter_speech/main.py` | argparse, builds predictor + handler + `AudioPipeline`, calls `.run()`; `_build_predictor()` factory for text-based modes; `_build_separator()` — `--source-separation auto` enables Demucs only in follow-semantic-words mode; audio mode builds `MERTPredictor` directly and reuses it as both handler and pipeline predictor |
+| CLI entry point | `src/propresenter_speech/main.py` | argparse, builds predictor + handler + `AudioPipeline`, calls `.run()`; `_build_predictor()` factory for text-based modes (`--asr-backend auto` default → mlx-whisper GPU if installed else faster-whisper CPU; default `--model tiny`); `_build_separator()` — `--source-separation auto` default enables separation in all transcription modes (off in follow-semantic-audio) and silently skips when no separation backend is installed; audio mode builds `MERTPredictor` directly and reuses it as both handler and pipeline predictor |
 | Accuracy evaluator | `src/speech_accuracy/evaluator.py` | `load_ground_truth()`, `AccuracyHandler`, `AccuracyEvaluator`, `EvaluationResult`; feeds audio through `FilePipeline` + `WhisperPredictor` with `AccuracyHandler` in place of the normal slide-cue handler; mirrors `FollowSemanticWordsHandler` gate (confidence OR margin threshold) via `_current_pred_idx`; scores each inference call against propresenter-train JSON ground truth using T_snap timing |
-| Accuracy CLI | `src/speech_accuracy/main.py` | `speech-accuracy` (single file) and `speech-accuracy-batch` (batch) entry points; JSONL event logging includes `audio_file`, `ground_truth_file`, `embedding_mode`, `source_separation`, `similarity_threshold`, `min_margin`; `--source-separation on` (default off so baselines stay comparable) isolates vocals before transcription |
+| Accuracy CLI | `src/speech_accuracy/main.py` | `speech-accuracy` (single file) and `speech-accuracy-batch` (batch) entry points; JSONL event logging includes `audio_file`, `ground_truth_file`, `embedding_mode`, `source_separation`, `asr_backend`, `similarity_threshold`, `min_margin`; `--source-separation on` (default off so baselines stay comparable) isolates vocals before transcription; `--asr-backend whisper-mlx` runs the Apple-GPU Whisper via `_build_transcriber()` |
 | Accuracy plot | `src/speech_accuracy/plot.py` | `speech-accuracy-plot` — offline 4-panel matplotlib visualiser: waveform, confidence, margin, predicted slide index; reads JSONL log + audio file + ground-truth JSON |
-| Multi-model eval runner | `src/speech_accuracy/run_eval.py` | `speech-accuracy-run-eval` CLI entry point; runs Whisper, MERT, and wav2vec-alt evaluations against one or more ground-truth JSON files; `--ground-truth` accepts any propresenter-train JSON; tags derived from filename stems; `--whisper-models` selects model sizes; `TRANSFORMERS_OFFLINE=1` set for MERT subprocess |
+| Multi-model eval runner | `src/speech_accuracy/run_eval.py` | `speech-accuracy-run-eval` CLI entry point; runs Whisper, MERT, and wav2vec-alt evaluations against one or more ground-truth JSON files; `--ground-truth` accepts any propresenter-train JSON; tags derived from filename stems; `--whisper-models` selects model sizes; `--asr-backend whisper-mlx` evaluates the Apple-GPU Whisper (log/PNG names get an `_mlx` marker); `TRANSFORMERS_OFFLINE=1` set for MERT subprocess |
 | Pairwise similarity chart | `src/speech_accuracy/whisper_pairwise.py` | `speech-accuracy-pairwise` CLI entry point; section×section text-embedding similarity grid using `all-MiniLM-L6-v2`; outputs PNG heatmap |
 | Summary chart | `src/speech_accuracy/plot_summary.py` | `speech-accuracy-plot-summary` CLI entry point; reads all `*.log` files in `--logs-dir`, auto-detects model/tag from summary records, plots grouped bar chart; accepts `--extra-logs` for logs outside the main dir |
 | Whisper benchmark | `tools/benchmark_whisper.py` | standalone script (no propresenter-speech imports); measures per-call latency and RTF for all Whisper model variants using synthetic audio; recommends largest real-time-capable model |
+| Whisper-MLX benchmark | `tools/benchmark_whisper_mlx.py` | standalone; same harness on the Apple GPU via mlx-whisper (fp16); directly comparable to `benchmark_whisper.py`; `--models` incl. `large-v3` / `large-v3-turbo`; requires whisper-mlx extra |
 | Wav2Vec2 benchmark | `tools/benchmark_wav2vec2.py` | standalone; `facebook/wav2vec2-large-960h-lv60-self`; measures per-call latency and RTF |
 | Wav2Vec2-ALT benchmark | `tools/benchmark_wav2vec2_alt.py` | standalone; loads SpeechBrain CKPT+... checkpoint; `--ckpt-dir` selects path |
 | MERT benchmark | `tools/benchmark_mert.py` | standalone; `m-a-p/MERT-v1-95M`; 24 kHz synthetic audio; `--model` selects variant |
@@ -64,6 +66,9 @@ poetry install
 # Install torch-dependent backends (wav2vec2, wav2vec2-alt, MERT)
 poetry install --extras torch
 
+# Install mlx-whisper ASR backend (Apple GPU — ~3-4x faster; runs small/medium in real time)
+poetry install --extras whisper-mlx
+
 # Install Demucs source separation (vocal isolation, torch — CPU-only on Mac)
 poetry install --extras separation
 
@@ -80,13 +85,19 @@ poetry run propresenter-speech --mode follow-semantic-words --embedding-mode wor
 poetry run propresenter-speech --mode follow-semantic-audio \
   --ground-truth ../propresenter-train/output/Song.json          # MERT audio embedding
 
-# ASR backend (default: whisper)
+# ASR backend (default: auto → mlx-whisper on the Apple GPU if installed, else
+# faster-whisper CPU; default --model is tiny)
+poetry run propresenter-speech                                       # auto GPU Whisper tiny + GPU separation
+poetry run propresenter-speech --asr-backend whisper --model base    # force CPU faster-whisper
+poetry run propresenter-speech --asr-backend whisper-mlx --model small
 poetry run propresenter-speech --asr-backend wav2vec2
 poetry run propresenter-speech --asr-backend wav2vec2-alt
 
-# Source separation (--source-separation auto is the default: Demucs vocal
-# isolation runs only in follow-semantic-words mode; on/off force it anywhere)
-poetry run propresenter-speech --mode follow-semantic-words                          # separation auto-on
+# Source separation (--source-separation auto is the default: vocal isolation runs
+# in ALL transcription modes, off in follow-semantic-audio; skipped if no backend
+# installed; on/off force it anywhere)
+poetry run propresenter-speech                                                       # separation auto-on
+poetry run propresenter-speech --source-separation off                               # disable everywhere
 poetry run propresenter-speech --mode follow-semantic-words --source-separation off
 poetry run propresenter-speech --mode presentation --source-separation on
 poetry run propresenter-speech --source-separation on --separation-model htdemucs_ft --separation-device cpu
@@ -122,6 +133,12 @@ poetry run speech-accuracy \
 # All presentations in a directory
 poetry run speech-accuracy-batch \
   --ground-truth-dir ../propresenter-train/output/ --model base
+
+# A/B Whisper accuracy on the Apple GPU (runs small/medium that CPU can't keep up with;
+# the JSONL summary records "asr_backend": "whisper-mlx")
+poetry run speech-accuracy \
+  --ground-truth ../propresenter-train/output/"Mary Had A Little Lamb.json" \
+  --model medium --asr-backend whisper-mlx
 
 # A/B the Demucs vocal-isolation impact (default off so baselines stay comparable;
 # the JSONL summary records "source_separation": "htdemucs" | "htdemucs-mlx" |
@@ -175,6 +192,12 @@ poetry run speech-accuracy-run-eval \
 poetry run speech-accuracy-run-eval \
   --ground-truth path/to/Song.json \
   --skip-mert --skip-wav2vec
+
+# Evaluate Whisper on the Apple GPU (log/PNG names get an _mlx marker so CPU and
+# GPU runs in the same results dir don't collide)
+poetry run speech-accuracy-run-eval \
+  --ground-truth path/to/Song.json \
+  --whisper-models small medium --asr-backend whisper-mlx --skip-mert --skip-wav2vec
 ```
 
 **Summary chart** — `speech-accuracy-plot-summary` reads all `.log` files in a directory and
@@ -201,7 +224,8 @@ poetry run speech-accuracy-pairwise \
 **Benchmarks** — standalone scripts in `tools/` (no Poetry install needed beyond deps):
 
 ```bash
-python tools/benchmark_whisper.py                        # all Whisper sizes
+python tools/benchmark_whisper.py                        # all Whisper sizes (CPU / faster-whisper)
+python tools/benchmark_whisper_mlx.py                    # Whisper on Apple GPU (mlx-whisper)
 python tools/benchmark_wav2vec2.py                       # Wav2Vec2ForCTC
 python tools/benchmark_wav2vec2_alt.py --ckpt-dir PATH   # Wav2Vec2-ALT
 python tools/benchmark_mert.py                           # MERT-v1-95M
@@ -351,8 +375,11 @@ to each audio window **before** `Predictor.predict()`.  It is fully decoupled fr
 predictors, handlers, and embedders — anything implementing the `SourceSeparator`
 protocol (`separate(audio) -> audio`) can replace it.
 
-1. **Enablement** — `--source-separation auto` (default) turns it on only in
-   `follow-semantic-words` mode; `on`/`off` force it for any mode.  `main.py:_build_separator()`
+1. **Enablement** — `--source-separation auto` (default) turns it on in **all
+   transcription modes** (`presentation`, `follow-trigger-words`, `follow-semantic-words`)
+   and off in `follow-semantic-audio`; `on`/`off` force it for any mode.  Under `auto`, if no
+   separation backend is installed `_build_separator()` warns and continues without it (so a
+   vanilla install still runs); `on` raises instead.  `main.py:_build_separator()`
    loads the model up front so the first mic window isn't delayed.  `--separation-backend`
    (`auto`/`demucs`/`demucs-mlx`) picks the implementation via `separation/factory.py:build_separator()`;
    `auto` prefers `MLXDemucsSeparator` (demucs-mlx, Apple GPU) when the `separation-mlx` extra

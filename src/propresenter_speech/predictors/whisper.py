@@ -13,13 +13,13 @@ import numpy as np
 
 from .base import TranscriptionResult
 from ..slide_follower import extract_words
-from ..transcriber import Transcriber
+from ..transcriber import SpeechTranscriber
 
 
 class WhisperPredictor:
     """Transcribes audio via Whisper and maintains a cumulative word buffer."""
 
-    def __init__(self, transcriber: Transcriber, verbose: bool = False):
+    def __init__(self, transcriber: SpeechTranscriber, verbose: bool = False):
         self._transcriber = transcriber
         self._verbose = verbose
         self._word_buffer: collections.deque[str] = collections.deque(maxlen=200)

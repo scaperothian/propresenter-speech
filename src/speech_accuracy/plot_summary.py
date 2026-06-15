@@ -44,7 +44,15 @@ def model_label(summary: dict) -> str:
     if mode == "wav2vec2-alt":
         return "wav2vec2-large ALT"
     if model:
-        return f"Whisper {model}"
+        # Keep CPU/GPU and separation on/off runs of the same model as distinct
+        # bar groups (they'd otherwise share a (label, tag) key and overwrite).
+        parts = []
+        if summary.get("asr_backend") == "whisper-mlx":
+            parts.append("mlx")
+        if summary.get("source_separation", "off") != "off":
+            parts.append("sep")
+        suffix = f" ({', '.join(parts)})" if parts else ""
+        return f"Whisper {model}{suffix}"
     return mode or "unknown"
 
 
